@@ -1,3 +1,11 @@
+[tool.poetry]
+name = "simulation-grpc-service"
+version = "0.1.0"
+description = "gRPC Simulation Service with PostgreSQL and Redis"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "application", from = "."}, {include = "infrastructure", from = "."}, {include = "domain", from = "."}]
+
 [project]
 name = "simulation-grpc-service"
 version = "0.1.0"
