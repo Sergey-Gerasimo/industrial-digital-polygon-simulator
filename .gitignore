@@ -1,3 +1,6 @@
 .venv
 poetry.lock
 __pycache__
+
+postgres_data
+redist_data
