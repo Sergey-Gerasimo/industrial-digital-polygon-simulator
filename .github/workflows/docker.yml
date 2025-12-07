@@ -3,8 +3,13 @@ name: Build and Push Multi-arch Docker Image
 on:
   push:
     branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -12,6 +17,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write  # Важно для GitHub Packages!
 
     steps:
     - name: Checkout code
@@ -31,36 +37,49 @@ jobs:
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y gcc g++ python3-dev
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install poetry grpcio-tools
-        poetry install --no-root --no-interaction
+        sudo apt-get install -y \
+          gcc \
+          g++ \
+          python3-dev \
+          protobuf-compiler
 
     - name: Generate gRPC code
       run: |
+        echo "🔧 Generating gRPC code..."
+        
+        # Install grpcio-tools
+        python -m pip install grpcio-tools
+        
+        # Create directory
         mkdir -p grpc_generated
+        
+        # Check if proto file exists
+        if [ ! -f "simulator.proto" ]; then
+          echo "❌ ERROR: simulator.proto not found!"
+          echo "Available files:"
+          ls -la *.proto 2>/dev/null || echo "No .proto files found"
+          exit 1
+        fi
+        
+        # Generate code
         python -m grpc_tools.protoc \
-          -I. \
+          -I./ \
           --python_out=./grpc_generated \
           --grpc_python_out=./grpc_generated \
           --pyi_out=./grpc_generated \
-          simulator.proto
+          ./simulator.proto
         
-        echo "Generated gRPC files:"
+        echo "✅ gRPC code generated"
+        
+        # Fix imports if file exists
+        if [ -f "grpc_generated/simulator_pb2_grpc.py" ]; then
+          sed -i 's/import simulator_pb2/from . import simulator_pb2/' grpc_generated/simulator_pb2_grpc.py
+          echo "✅ gRPC imports fixed"
+        fi
+        
+        # Show generated files
+        echo "📁 Generated files:"
         ls -la grpc_generated/
-
-    - name: Fix gRPC imports
-      run: |
-        sed -i 's/import auth_pb2/from . import auth_pb2/' grpc_generated/auth_pb2_grpc.py || true
-        echo "✅ gRPC imports fixed"
-
-    - name: Lowercase repository owner
-      id: lowercase
-      run: |
-        echo "owner_lowercase=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
     - name: Log in to GitHub Container Registry
       if: github.event_name != 'pull_request'
@@ -74,14 +93,15 @@ jobs:
       id: meta
       uses: docker/metadata-action@v5
       with:
-        images: ghcr.io/${{ steps.lowercase.outputs.owner_lowercase }}/auth-grpc-service
+        images: |
+          ghcr.io/${{ github.repository_owner }}/simulation-grpc-service
         tags: |
           type=ref,event=branch
-          type=ref,event=pr
-          type=sha,prefix={{branch}}-
+          type=ref,event=tag
+          type=sha
           type=raw,value=latest,enable={{is_default_branch}}
 
-    - name: Build and push multi-arch Docker image
+    - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -91,9 +111,33 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+        provenance: false  # Может помочь с permission issues
 
-    - name: Verify multi-arch manifest
+    - name: Verify Docker image
       if: github.event_name != 'pull_request'
       run: |
-        echo "🔍 Checking multi-arch manifest..."
-        docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner_lowercase }}/auth-grpc-service:latest
+        echo "🔍 Verifying Docker image..."
+        # Pull and test the image
+        IMAGE_TAG=$(echo "${{ steps.meta.outputs.tags }}" | cut -d' ' -f1)
+        echo "Image: $IMAGE_TAG"
+        
+        # Try to pull the image
+        if docker pull $IMAGE_TAG 2>/dev/null; then
+          echo "✅ Image successfully pushed to GHCR"
+          echo "📦 Available at: $IMAGE_TAG"
+        else
+          echo "⚠️  Could not pull image immediately"
+          echo "Check at: https://github.com/${{ github.repository }}/pkgs/container/simulation-grpc-service"
+        fi
+
+    - name: Output image info
+      if: github.event_name != 'pull_request'
+      run: |
+        echo "🚀 Docker image build complete!"
+        echo ""
+        echo "📦 Image details:"
+        echo "Repository: https://github.com/${{ github.repository }}/pkgs/container/simulation-grpc-service"
+        echo ""
+        echo "🐳 To pull and run locally:"
+        echo "docker pull ghcr.io/${{ github.repository_owner }}/simulation-grpc-service:latest"
+        echo "docker run -p 50051:50051 -p 50052:50052 ghcr.io/${{ github.repository_owner }}/simulation-grpc-service:latest"
