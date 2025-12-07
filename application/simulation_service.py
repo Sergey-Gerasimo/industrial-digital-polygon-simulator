@@ -707,16 +707,24 @@ class SimulationServiceImpl(SimulationServiceServicer):
 
         simulation = self.simulations[simulation_id]
 
-        # Генерируем тестовые результаты симуляции
-        simulation.results = SimulationResults(
-            profit=2000000,
-            cost=1500000,
-            profitability=1.33,
+        # Создаем новые объекты с обновленными значениями
+        updated_simulation = Simulation(
+            capital=simulation.capital,
+            step=4,  # Завершаем симуляцию
+            simulation_id=simulation.simulation_id,
+            parameters=simulation.parameters,  # Копируем параметры
+            results=SimulationResults(
+                profit=2000000,
+                cost=1500000,
+                profitability=1.33,
+            ),
         )
-        simulation.step = 4  # Завершаем симуляцию
+
+        # Обновляем в хранилище
+        self.simulations[simulation_id] = updated_simulation
 
         return SimulationResponse(
-            simulation=simulation,
+            simulation=updated_simulation,
             timestamp=datetime.now().isoformat(),
         )
 
