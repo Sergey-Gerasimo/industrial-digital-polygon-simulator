@@ -68,11 +68,11 @@ jobs:
       run: |
         mkdir -p grpc_generated
         python -m grpc_tools.protoc \
-          -I./ \
+          -I. \
           --python_out=./grpc_generated \
           --grpc_python_out=./grpc_generated \
           --pyi_out=./grpc_generated \
-          ./simulator.proto
+          simulator.proto
         
         # Fix imports
         sed -i 's/import simulator_pb2/from . import simulator_pb2/' grpc_generated/simulator_pb2_grpc.py
