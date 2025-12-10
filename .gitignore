@@ -3,4 +3,5 @@ poetry.lock
 __pycache__
 
 postgres_data
-redist_data
+redis_data
+logs
