@@ -34,14 +34,13 @@ jobs:
           gcc \
           g++ \
           python3-dev \
-          protobuf-compiler \
-          docker-compose-plugin
+          protobuf-compiler
 
     - name: Verify Docker
       run: |
-        # Docker уже доступен в GitHub Actions
+        # Docker и docker compose уже доступны в GitHub Actions
         docker --version
-        docker compose version || docker-compose --version
+        docker compose version
 
     - name: Generate gRPC code
       run: |
@@ -110,16 +109,9 @@ jobs:
       run: |
         echo "🔨 Attempting to build simulation_service container for tests..."
         
-        # Определяем команду docker compose
-        if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-          DOCKER_COMPOSE_CMD="docker compose"
-        else
-          DOCKER_COMPOSE_CMD="docker-compose"
-        fi
-        
-        echo "Using: $DOCKER_COMPOSE_CMD"
-        
-        if $DOCKER_COMPOSE_CMD build simulation_service 2>&1 | tee /tmp/build.log; then
+        # В GitHub Actions docker compose доступен по умолчанию
+        # Используем новый синтаксис docker compose (встроенный в Docker CLI)
+        if docker compose build simulation_service 2>&1 | tee /tmp/build.log; then
           echo "✅ Container built successfully"
           echo "success=true" >> $GITHUB_OUTPUT
         else
