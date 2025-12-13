@@ -22,8 +22,10 @@ services:
       - ./proto:/app/proto # для горячей перегенерации proto
     restart: unless-stopped
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "python", "-c", "import grpc; channel = grpc.insecure_channel('localhost:50051'); print('gRPC server is running')" ]
       interval: 30s
@@ -41,9 +43,10 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U user -d auth_db" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7-alpine
@@ -55,10 +58,11 @@ services:
     environment:
       - REDIS_PASSWORD=redis_password
     healthcheck:
-      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: [ "CMD-SHELL", "redis-cli -a redis_password ping | grep PONG" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
 volumes:
   postgres_data:

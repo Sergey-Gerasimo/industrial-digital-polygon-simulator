@@ -1,9 +1,12 @@
 from datetime import datetime
-from typing import Dict, List, Optional
-import uuid
-import random
+from typing import Callable, Optional, TypeVar, TYPE_CHECKING
+import logging
+
+if TYPE_CHECKING:
+    from domain.simulaton import Simulation
 
 import grpc
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from grpc_generated.simulator_pb2 import (
     # Базовые запросы и ответы
     CreateSimulationRquest,
@@ -22,40 +25,22 @@ from grpc_generated.simulator_pb2 import (
     DeleteSupplierRequest,
     # Конфигурация складов
     IncreaseWarehouseSizeRequest,
-    # Конфигурация процесса
-    AddProcessRouteRequest,
-    DeleteProcesRouteRequest,
-    SetEquipmentOnWorkplaceRequst,
-    UnSetEquipmentOnWorkplaceRequst,
-    # Управление картой процесса (Инженеринг)
-    ConfigureWorkplaceInGraphRequest,
-    RemoveWorkplaceFromGraphRequest,
-    SetWorkplaceAsStartNodeRequest,
-    SetWorkplaceAsEndNodeRequest,
+    # Управление графом процесса
     UpdateProcessGraphRequest,
     # Распределение плана (Производство)
-    DistributeProductionPlanRequest,
-    ProductionPlanDistributionResponse,
-    GetProductionPlanDistributionRequest,
-    UpdateProductionAssignmentRequest,
-    UpdateWorkshopPlanRequest,
+    SetProductionPlanRowRequest,
     # Конфигурация тендеров
     AddTenderRequest,
     RemoveTenderRequest,
     # Общие настройки
     SetDealingWithDefectsRequest,
-    SetHasCertificationRequest,
-    AddProductionImprovementRequest,
-    DeleteProductionImprovementRequest,
     SetSalesStrategyRequest,
+    SetLeanImprovementStatusRequest,
     # Специфичные настройки по ролям
     SetQualityInspectionRequest,
-    SetDeliveryScheduleRequest,
+    SetDeliveryPeriodRequest,
     SetEquipmentMaintenanceIntervalRequest,
-    UpdateProductionScheduleRequest,
     SetCertificationStatusRequest,
-    SetLeanImprovementStatusRequest,
-    SetSalesStrategyWithDetailsRequest,
     # Методы получения метрик и мониторинга
     GetMetricsRequest,
     FactoryMetricsResponse,
@@ -77,21 +62,17 @@ from grpc_generated.simulator_pb2 import (
     WarehouseLoadChartResponse,
     GetRequiredMaterialsRequest,
     RequiredMaterialsResponse,
+    UnplannedRepair,
+    WarehouseLoadChart,
+    RequiredMaterial,
     GetAvailableImprovementsRequest,
     AvailableImprovementsResponse,
     GetDefectPoliciesRequest,
     DefectPoliciesResponse,
-    GetSimulationHistoryRequest,
-    SimulationHistoryResponse,
-    # Пошаговая симуляция
-    RunSimulationStepRequest,
-    SimulationStepResponse,
     # Валидация
     ValidateConfigurationRequest,
     ValidationResponse,
     # Справочные данные
-    GetReferenceDataRequest,
-    ReferenceDataResponse,
     GetMaterialTypesRequest,
     MaterialTypesResponse,
     GetEquipmentTypesRequest,
@@ -106,336 +87,165 @@ from grpc_generated.simulator_pb2 import (
     CertificationsListResponse,
     GetAvailableSalesStrategiesRequest,
     SalesStrategiesListResponse,
-    # Основные сообщения
-    Simulation,
-    SimulationParameters,
-    SimulationResults,
-    Supplier,
-    Warehouse,
-    Worker,
-    Logist,
-    Equipment,
-    Workplace,
-    Route,
-    ProcessGraph,
-    Consumer,
-    Tender,
-    ProductionPlanAssignment,
-    DistributionStrategy,
-    FactoryMetrics,
-    WarehouseMetrics,
-    ProductionMetrics,
-    QualityMetrics,
-    EngineeringMetrics,
-    CommercialMetrics,
-    ProcurementMetrics,
-    ProductionSchedule,
-    WorkshopPlan,
-    UnplannedRepair,
-    SpaghettiDiagram,
-    RequiredMaterial,
-    QualityInspection,
-    DeliverySchedule,
-    Certification,
-    LeanImprovement,
-    WarehouseLoadChart,
-    OperationTimingChart,
-    DowntimeChart,
-    ModelMasteryChart,
-    ProjectProfitabilityChart,
 )
 from grpc_generated.simulator_pb2_grpc import SimulationServiceServicer
 
+from infrastructure.repositories import (
+    SimulationRepository,
+    WorkerRepository,
+    SupplierRepository,
+    TenderRepository,
+    EquipmentRepository,
+)
+from application.proto_mappers import (
+    domain_simulation_to_proto,
+    proto_simulation_to_domain,
+    domain_factory_metrics_to_proto,
+    domain_production_metrics_to_proto,
+    domain_quality_metrics_to_proto,
+    domain_engineering_metrics_to_proto,
+    domain_commercial_metrics_to_proto,
+    domain_procurement_metrics_to_proto,
+    proto_process_graph_to_domain,
+    proto_production_plan_row_to_domain,
+)
+from application.simulation_factory import create_default_simulation
+from domain.simulaton import SimulationParameters
+
+logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
 
 class SimulationServiceImpl(SimulationServiceServicer):
-    def __init__(self):
-        self.simulations: Dict[str, Simulation] = {}
-        self.simulation_history: Dict[str, List[SimulationStepResponse]] = {}
-        self._init_test_data()
+    """Реализация сервиса симуляции с использованием принципов DDD."""
 
-    def _init_test_data(self):
-        """Инициализация тестовых данных."""
-        # Создаем тестового работника
-        test_worker = Worker(
-            worker_id="worker_001",
-            name="Иванов Иван Иванович",
-            qualification=5,
-            specialty="Слесарь-сборщик",
-            salary=75000,
-        )
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
+        self.session_factory = session_factory
 
-        # Создаем тестового логиста
-        test_logist = Logist(
-            worker_id="logist_001",
-            name="Петров Петр Петрович",
-            qualification=6,
-            specialty="Логистика",
-            salary=90000,
-            speed=60,
-            vehicle_type="Газель",
-        )
+    # -----------------------------------------------------------------
+    #          Базовые методы работы с симуляцией
+    # -----------------------------------------------------------------
 
-        # Создаем тестовое оборудование
-        test_equipment = Equipment(
-            equipment_id="equipment_001",
-            name="Токарный станок ЧПУ",
-            reliability=0.95,
-            maintenance_period=30,
-            maintenance_cost=50000,
-            cost=1500000,
-            repair_cost=300000,
-            repair_time=5,
-        )
+    async def _load_simulation(
+        self, session: AsyncSession, simulation_id: str, context
+    ):
+        """Загружает симуляцию из БД."""
+        from domain import Simulation
 
-        # Создаем тестовые рабочие места (с новыми полями)
-        test_workplace_1 = Workplace(
-            workplace_id="workplace_001",
-            workplace_name="Слесарный участок",
-            required_speciality="Слесарь",
-            required_qualification=4,
-            worker=test_worker,
-            equipment=test_equipment,
-            required_stages=["Подготовка"],
-            is_start_node=True,
-            is_end_node=False,
-            next_workplace_ids=["workplace_002"],
-        )
+        try:
+            repo = SimulationRepository(session)
+            simulation = await repo.get(simulation_id)
 
-        test_workplace_2 = Workplace(
-            workplace_id="workplace_002",
-            workplace_name="Сборочный участок",
-            required_speciality="Сборщик",
-            required_qualification=5,
-            worker=Worker(),
-            equipment=Equipment(),
-            required_stages=["workplace_001"],
-            is_start_node=False,
-            is_end_node=False,
-            next_workplace_ids=["workplace_003"],
-        )
+            if simulation is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Симуляция с ID {simulation_id} не найдена")
+                return None
 
-        test_workplace_3 = Workplace(
-            workplace_id="workplace_003",
-            workplace_name="Контроль качества",
-            required_speciality="Контролер",
-            required_qualification=4,
-            worker=Worker(),
-            equipment=Equipment(),
-            required_stages=["workplace_002"],
-            is_start_node=False,
-            is_end_node=True,
-            next_workplace_ids=[],
-        )
+            return simulation
+        except Exception as e:
+            logger.error(f"Error loading simulation: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Ошибка при загрузке симуляции: {str(e)}")
+            return None
 
-        # Создаем тестового заказчика
-        test_consumer = Consumer(
-            consumer_id="consumer_001",
-            name="ООО 'Промышленные системы'",
-            type="Государственная",
-        )
+    async def _save_simulation(self, session: AsyncSession, simulation, context):
+        """Сохраняет симуляцию в БД."""
+        try:
+            repo = SimulationRepository(session)
+            saved = await repo.save(simulation)
 
-        # Создаем тестового поставщика
-        test_supplier = Supplier(
-            supplier_id="supplier_001",
-            name="ООО 'МеталлТрейд'",
-            product_name="Сталь листовая",
-            delivery_period=5,
-            special_delivery_period=2,
-            reliability=0.95,
-            product_quality=0.92,
-            cost=150000,
-            special_delivery_cost=250000,
-        )
+            if saved is None:
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details("Ошибка при сохранении симуляции")
+                return None
 
-        # Создаем тестовый производственный план
-        test_production_schedule = ProductionSchedule(
-            schedule_items=[
-                ProductionSchedule.ScheduleItem(
-                    item_id="item_001",
-                    priority=1,
-                    plan_number="П-001",
-                    plan_date="2024-01-15",
-                    product_name="Спутник связи",
-                    planned_quantity=10,
-                    actual_quantity=0,
-                    remaining_to_produce=10,
-                    planned_completion_date="2024-03-15",
-                    order_number="ЗАК-001",
-                    tender_id="tender_001",
-                ),
-                ProductionSchedule.ScheduleItem(
-                    item_id="item_002",
-                    priority=2,
-                    plan_number="П-002",
-                    plan_date="2024-01-20",
-                    product_name="Научный спутник",
-                    planned_quantity=5,
-                    actual_quantity=0,
-                    remaining_to_produce=5,
-                    planned_completion_date="2024-04-10",
-                    order_number="ЗАК-002",
-                    tender_id="tender_002",
-                ),
-            ]
-        )
+            return saved
+        except Exception as e:
+            logger.error(f"Error saving simulation: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Ошибка при сохранении симуляции: {str(e)}")
+            return None
 
-        # Создаем тестовый план цеха
-        test_workshop_plan = WorkshopPlan(
-            workplace_nodes=[
-                WorkshopPlan.WorkplaceNode(
-                    workplace_id="workplace_001",
-                    assigned_worker=test_worker,
-                    assigned_equipment=test_equipment,
-                    maintenance_interval=30,
-                    is_start_node=True,
-                    is_end_node=False,
-                    assigned_schedule_items=["item_001", "item_002"],
-                    max_capacity_per_day=2,
-                    current_utilization=0.75,
-                ),
-            ],
-            logistic_routes=[
-                Route(
-                    length=10,
-                    from_workplace="workplace_001",
-                    to_workplace="workplace_002",
-                ),
-                Route(
-                    length=15,
-                    from_workplace="workplace_002",
-                    to_workplace="workplace_003",
-                ),
-            ],
-            production_schedule_id="schedule_001",
-        )
+    def _get_simulation_parameters(self, simulation) -> SimulationParameters:
+        """Возвращает последние параметры симуляции (с максимальным step)."""
+        if not simulation.parameters:
+            raise ValueError("У симуляции нет параметров")
+        return max(simulation.parameters, key=lambda p: p.step)
 
-        # Создаем тестовую симуляцию
-        simulation_id = "test_simulation_001"
+    async def _update_and_save(
+        self,
+        simulation_id: str,
+        update_func: Callable,
+        context,
+    ) -> SimulationResponse:
+        """Универсальный метод для загрузки, обновления и сохранения симуляции."""
+        async with self.session_factory() as session:
+            try:
+                simulation = await self._load_simulation(
+                    session, simulation_id, context
+                )
+                if simulation is None:
+                    return SimulationResponse()
 
-        simulation = Simulation(
-            capital=5000000,
-            step=1,
-            simulation_id=simulation_id,
-            parameters=SimulationParameters(
-                logist=test_logist,
-                suppliers=[test_supplier],
-                backup_suppliers=[
-                    Supplier(
-                        supplier_id="backup_supplier_001",
-                        name="Резервный поставщик 'СтройМатериалы'",
-                        product_name="Крепежные изделия",
-                        delivery_period=10,
-                        special_delivery_period=4,
-                        reliability=0.75,
-                        product_quality=0.85,
-                        cost=120000,
-                        special_delivery_cost=200000,
-                    )
-                ],
-                materials_warehouse=Warehouse(
-                    warehouse_id="warehouse_materials_1",
-                    inventory_worker=test_worker,
-                    size=1000,
-                    loading=350,
-                    materials={
-                        "Сталь листовая": 200,
-                        "Электронные компоненты": 100,
-                        "Крепеж": 150,
-                    },
-                ),
-                product_warehouse=Warehouse(
-                    warehouse_id="warehouse_products_1",
-                    inventory_worker=test_worker,
-                    size=500,
-                    loading=120,
-                    materials={
-                        "Готовые станки": 50,
-                        "Комплектующие": 70,
-                    },
-                ),
-                processes=ProcessGraph(
-                    process_graph_id="process_graph_1",
-                    workplaces=[test_workplace_1, test_workplace_2, test_workplace_3],
-                    routes=[
-                        Route(
-                            length=10,
-                            from_workplace="workplace_001",
-                            to_workplace="workplace_002",
-                        ),
-                        Route(
-                            length=15,
-                            from_workplace="workplace_002",
-                            to_workplace="workplace_003",
-                        ),
-                    ],
-                ),
-                tenders=[
-                    Tender(
-                        tender_id="tender_001",
-                        consumer=test_consumer,
-                        cost=2500000,
-                        quantity_of_products=10,
-                        penalty_per_day=1000000,
-                        warranty_years=3,
-                        payment_form="50% аванс, 50% по факту",
-                    ),
-                ],
-                dealing_with_defects="Ремонтировать на месте",
-                has_certification=True,
-                production_improvements=["Автоматизация склада", "Внедрение ERP"],
-                sales_strategy="Агрессивная",
-                sales_growth_forecast=0.15,
-                unit_production_cost=85000,
-                certifications=[
-                    Certification(
-                        certificate_type="ГОСТ Р",
-                        is_obtained=True,
-                        implementation_cost=500000,
-                        implementation_time_days=90,
-                    )
-                ],
-                lean_improvements=[
-                    LeanImprovement(
-                        improvement_id="improvement_001",
-                        name="5S система",
-                        is_implemented=True,
-                        implementation_cost=200000,
-                        efficiency_gain=0.15,
-                    )
-                ],
-                production_assignments={
-                    "item_001": ProductionPlanAssignment(
-                        schedule_item_id="item_001",
-                        workplace_id="workplace_001",
-                        assigned_quantity=5,
-                        assigned_worker_id="worker_001",
-                        assigned_equipment_id="equipment_001",
-                        completion_percentage=0.0,
-                    ),
-                    "item_002": ProductionPlanAssignment(
-                        schedule_item_id="item_002",
-                        workplace_id="workplace_001",
-                        assigned_quantity=3,
-                        assigned_worker_id="worker_001",
-                        assigned_equipment_id="equipment_001",
-                        completion_percentage=0.0,
-                    ),
-                },
-                distribution_strategy=DistributionStrategy.DISTRIBUTION_STRATEGY_BALANCED,
-                workshop_plan=test_workshop_plan,
-                production_schedule=test_production_schedule,
-            ),
-            results=SimulationResults(
-                profit=1500000,
-                cost=1000000,
-                profitability=1.5,
-            ),
-            room_id="room_001",
-            is_completed=False,
-        )
+                # Выполняем обновление (может выбросить ValueError)
+                update_func(simulation)
 
-        self.simulations[simulation_id] = simulation
-        self.simulation_history[simulation_id] = []
+                saved = await self._save_simulation(session, simulation, context)
+                if saved is None:
+                    return SimulationResponse()
+
+                # Коммитим изменения перед возвратом
+                await session.commit()
+
+                # Возвращаем обновленную симуляцию по ID
+                return await self._build_simulation_response(session, simulation_id)
+            except ValueError:
+                # Пробрасываем ValueError наверх для обработки в вызывающем методе
+                await session.rollback()
+                raise
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error in _update_and_save: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении симуляции: {str(e)}")
+                return SimulationResponse()
+
+    async def _build_simulation_response(
+        self, session: AsyncSession, simulation_id: Optional[str] = None
+    ) -> SimulationResponse:
+        """Формирует ответ с симуляцией(ями).
+
+        Args:
+            session: Асинхронная сессия БД
+            simulation_id: Опциональный ID симуляции. Если указан, возвращает только эту симуляцию.
+                          Если не указан, возвращает последнюю из всех симуляций.
+        """
+        if simulation_id:
+            # Возвращаем конкретную симуляцию по ID
+            repo = SimulationRepository(session)
+            simulation = await repo.get(simulation_id)
+            if simulation:
+                proto_simulation = domain_simulation_to_proto(simulation)
+                return SimulationResponse(
+                    simulations=proto_simulation,
+                    timestamp=datetime.now().isoformat(),
+                )
+            else:
+                return SimulationResponse(timestamp=datetime.now().isoformat())
+        else:
+            # Возвращаем последнюю симуляцию из всех
+            repo = SimulationRepository(session)
+            all_simulations = await repo.get_all()
+
+            if all_simulations:
+                proto_simulation = domain_simulation_to_proto(all_simulations[-1])
+                return SimulationResponse(
+                    simulations=proto_simulation,
+                    timestamp=datetime.now().isoformat(),
+                )
+            else:
+                return SimulationResponse(timestamp=datetime.now().isoformat())
 
     # -----------------------------------------------------------------
     #          Базовые методы симуляции
@@ -444,49 +254,89 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def create_simulation(
         self, request: CreateSimulationRquest, context
     ) -> SimulationResponse:
-        simulation_id = f"sim_{uuid.uuid4().hex[:8]}"
+        """Создает новую симуляцию."""
+        async with self.session_factory() as session:
+            try:
+                # Получаем room_id из метаданных gRPC, если доступно, иначе используем пустую строку
+                room_id = ""
+                if context and hasattr(context, "invocation_metadata"):
+                    metadata = dict(context.invocation_metadata())
+                    room_id = metadata.get("room-id", "")
 
-        simulation = Simulation(
-            capital=1000000,
-            step=0,
-            simulation_id=simulation_id,
-            parameters=SimulationParameters(),
-            results=SimulationResults(),
-            is_completed=False,
-        )
+                # Используем дефолтный капитал (можно позже добавить в request)
+                capital = 10000000  # 10 миллионов по умолчанию
 
-        self.simulations[simulation_id] = simulation
-        self.simulation_history[simulation_id] = []
+                # Используем фабрику для создания симуляции с дефолтными параметрами
+                simulation = await create_default_simulation(
+                    session=session,
+                    capital=capital,
+                    room_id=room_id,
+                )
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+                saved = await self._save_simulation(session, simulation, context)
+
+                if saved is None:
+                    return SimulationResponse()
+
+                # Возвращаем созданную симуляцию по ID
+                return await self._build_simulation_response(
+                    session, saved.simulation_id
+                )
+            except Exception as e:
+                logger.error(f"Error creating simulation: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании симуляции: {str(e)}")
+                return SimulationResponse()
 
     async def get_simulation(
         self, request: GetSimulationRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Получает симуляцию по ID."""
+        async with self.session_factory() as session:
+            try:
+                simulation = await self._load_simulation(
+                    session, request.simulation_id, context
+                )
+                if simulation is None:
+                    return SimulationResponse()
 
-        # Если симуляция не найдена, создаем новую
-        if simulation_id not in self.simulations:
-            simulation = Simulation(
-                capital=1000000,
-                step=0,
-                simulation_id=simulation_id,
-                parameters=SimulationParameters(),
-                results=SimulationResults(),
-                is_completed=False,
+                proto_simulation = domain_simulation_to_proto(simulation)
+                return SimulationResponse(
+                    simulations=proto_simulation,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting simulation: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении симуляции: {str(e)}")
+                return SimulationResponse()
+
+    async def run_simulation(
+        self, request: RunSimulationRequest, context
+    ) -> SimulationResponse:
+        """Запускает одну итерацию симуляции.
+
+        Максимальное количество шагов симуляции - 4 (шаги 1, 2, 3, 4).
+        При попытке запустить симуляцию в 5-й и далее раз возвращается ошибка.
+        """
+        try:
+            # Запускаем симуляцию (все проверки выполняются в доменном классе)
+            # _update_and_save создает свою сессию, поэтому не нужно создавать еще одну
+            return await self._update_and_save(
+                request.simulation_id,
+                lambda sim: sim.run_simulation(),
+                context,
             )
-            self.simulations[simulation_id] = simulation
-            self.simulation_history[simulation_id] = []
-
-        simulation = self.simulations[simulation_id]
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+        except ValueError as e:
+            # Обрабатываем бизнес-ошибки из доменного класса
+            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+            context.set_details(str(e))
+            return SimulationResponse()
+        except Exception as e:
+            logger.error(f"Error running simulation: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Ошибка при запуске симуляции: {str(e)}")
+            return SimulationResponse()
 
     # -----------------------------------------------------------------
     #          Конфигурация персонала
@@ -495,115 +345,110 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def set_logist(
         self, request: SetLogistRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает логиста для симуляции."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            worker_repo = WorkerRepository(session)
+            logist = await worker_repo.get(request.worker_id)
 
-        # Создаем тестового логиста
-        logist = Logist(
-            worker_id=request.worker_id,
-            name=f"Логист {request.worker_id}",
-            qualification=5,
-            specialty="Логистика",
-            salary=80000,
-            speed=50,
-            vehicle_type="Микроавтобус",
-        )
+            if logist is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Логист с ID {request.worker_id} не найден")
+                return SimulationResponse()
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.logist.CopyFrom(logist)
+            params = self._get_simulation_parameters(simulation)
+            params.set_logist(logist)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def set_warehouse_inventory_worker(
         self, request: SetWarehouseInventoryWorkerRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает складского работника для симуляции."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            worker_repo = WorkerRepository(session)
+            worker = await worker_repo.get(request.worker_id)
 
-        # Создаем тестового работника
-        worker = Worker(
-            worker_id=request.worker_id,
-            name="Складской работник",
-            qualification=3,
-            specialty="Кладовщик",
-            salary=45000,
-        )
+            if worker is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Работник с ID {request.worker_id} не найден")
+                return SimulationResponse()
 
-        simulation = self.simulations[simulation_id]
+            params = self._get_simulation_parameters(simulation)
+            if request.warehouse_type == 1:  # WAREHOUSE_TYPE_MATERIALS
+                params.set_material_warehouse_inventory_worker(worker)
+            elif request.warehouse_type == 2:  # WAREHOUSE_TYPE_PRODUCTS
+                params.set_product_warehouse_inventory_worker(worker)
 
-        if request.warehouse_type == 1:  # WAREHOUSE_TYPE_MATERIALS
-            simulation.parameters.materials_warehouse.inventory_worker.CopyFrom(worker)
-        elif request.warehouse_type == 2:  # WAREHOUSE_TYPE_PRODUCTS
-            simulation.parameters.product_warehouse.inventory_worker.CopyFrom(worker)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def set_worker_on_workerplace(
         self, request: SetWorkerOnWorkerplaceRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает работника на рабочее место."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            worker_repo = WorkerRepository(session)
+            worker = await worker_repo.get(request.worker_id)
 
-        # Создаем тестового работника
-        worker = Worker(
-            worker_id=request.worker_id,
-            name="Работник на месте",
-            qualification=4,
-            specialty="Оператор",
-            salary=60000,
-        )
+            if worker is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Работник с ID {request.worker_id} не найден")
+                return SimulationResponse()
 
-        simulation = self.simulations[simulation_id]
+            params = self._get_simulation_parameters(simulation)
+            # Используем метод ProcessGraph, так как в SimulationParameters нет метода для этого
+            # Это допустимо, так как processes - это часть SimulationParameters
+            params.processes.set_worker_on_workplace(request.workplace_id, worker)
 
-        # Ищем рабочее место и устанавливаем работника
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                workplace.worker.CopyFrom(worker)
-                break
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def unset_worker_on_workerplace(
         self, request: UnSetWorkerOnWorkerplaceRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Убирает работника с рабочего места."""
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def unset_worker(sim):
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            params.processes.unset_worker_on_workplace(request.workplace_id)
 
-        simulation = self.simulations[simulation_id]
-
-        # Убираем работника со всех рабочих мест
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.worker.worker_id == request.worker_id:
-                workplace.ClearField("worker")
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
+        return await self._update_and_save(
+            request.simulation_id,
+            unset_worker,
+            context,
         )
 
     # -----------------------------------------------------------------
@@ -613,70 +458,52 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def add_supplier(
         self, request: AddSupplierRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Добавляет поставщика к симуляции."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            supplier_repo = SupplierRepository(session)
+            supplier = await supplier_repo.get(request.supplier_id)
 
-        # Создаем тестового поставщика
-        supplier = Supplier(
-            supplier_id=request.supplier_id,
-            name=f"Поставщик {request.supplier_id}",
-            product_name="Тестовые материалы",
-            delivery_period=7,
-            special_delivery_period=3,
-            reliability=0.85,
-            product_quality=0.88,
-            cost=100000,
-            special_delivery_cost=180000,
-        )
+            if supplier is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Поставщик с ID {request.supplier_id} не найден")
+                return SimulationResponse()
 
-        simulation = self.simulations[simulation_id]
+            params = self._get_simulation_parameters(simulation)
+            if request.is_backup:
+                params.add_backup_supplier(supplier)
+            else:
+                params.add_supplier(supplier)
 
-        if request.is_backup:
-            simulation.parameters.backup_suppliers.append(supplier)
-        else:
-            simulation.parameters.suppliers.append(supplier)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def delete_supplier(
         self, request: DeleteSupplierRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Удаляет поставщика из симуляции."""
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def remove_supplier(sim):
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            params.remove_supplier(request.supplier_id)
+            params.remove_backup_supplier(request.supplier_id)
 
-        simulation = self.simulations[simulation_id]
-        supplier_id = request.supplier_id
-
-        # Удаляем из основных поставщиков
-        suppliers_to_keep = [
-            s for s in simulation.parameters.suppliers if s.supplier_id != supplier_id
-        ]
-        simulation.parameters.suppliers.clear()
-        simulation.parameters.suppliers.extend(suppliers_to_keep)
-
-        # Удаляем из запасных поставщиков
-        backup_suppliers_to_keep = [
-            s
-            for s in simulation.parameters.backup_suppliers
-            if s.supplier_id != supplier_id
-        ]
-        simulation.parameters.backup_suppliers.clear()
-        simulation.parameters.backup_suppliers.extend(backup_suppliers_to_keep)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
+        return await self._update_and_save(
+            request.simulation_id,
+            remove_supplier,
+            context,
         )
 
     # -----------------------------------------------------------------
@@ -686,452 +513,72 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def increase_warehouse_size(
         self, request: IncreaseWarehouseSizeRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Увеличивает размер склада."""
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def update_size(sim):
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            if request.warehouse_type == 1:  # WAREHOUSE_TYPE_MATERIALS
+                params.increase_material_warehouse_size(request.size)
+            elif request.warehouse_type == 2:  # WAREHOUSE_TYPE_PRODUCTS
+                params.increase_product_warehouse_size(request.size)
 
-        simulation = self.simulations[simulation_id]
-
-        if request.warehouse_type == 1:  # WAREHOUSE_TYPE_MATERIALS
-            simulation.parameters.materials_warehouse.size += request.size
-        elif request.warehouse_type == 2:  # WAREHOUSE_TYPE_PRODUCTS
-            simulation.parameters.product_warehouse.size += request.size
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+        return await self._update_and_save(request.simulation_id, update_size, context)
 
     # -----------------------------------------------------------------
-    #          Конфигурация процесса (Инженеринг)
+    #          Управление графом процесса
     # -----------------------------------------------------------------
-
-    async def add_process_rote(
-        self, request: AddProcessRouteRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        route = Route(
-            length=request.length,
-            from_workplace=request.from_workplace,
-            to_workplace=request.to_workplace,
-        )
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.processes.routes.append(route)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def delete_process_rote(
-        self, request: DeleteProcesRouteRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        routes_to_keep = [
-            r
-            for r in simulation.parameters.processes.routes
-            if not (
-                r.from_workplace == request.from_workplace
-                and r.to_workplace == request.to_workplace
-            )
-        ]
-        simulation.parameters.processes.routes.clear()
-        simulation.parameters.processes.routes.extend(routes_to_keep)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_equipment_on_workplace(
-        self, request: SetEquipmentOnWorkplaceRequst, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        # Создаем тестовое оборудование
-        equipment = Equipment(
-            equipment_id=request.equipment_id,
-            name=f"Оборудование {request.equipment_id}",
-            reliability=0.9,
-            maintenance_period=30,
-            maintenance_cost=40000,
-            cost=1000000,
-            repair_cost=200000,
-            repair_time=3,
-        )
-
-        simulation = self.simulations[simulation_id]
-
-        # Ищем рабочее место и устанавливаем оборудование
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                workplace.equipment.CopyFrom(equipment)
-                break
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def unset_equipment_on_workplace(
-        self, request: UnSetEquipmentOnWorkplaceRequst, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Убираем оборудование с указанного рабочего места
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                workplace.ClearField("equipment")
-                break
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    # -----------------------------------------------------------------
-    #          Управление картой процесса (Инженеринг)
-    # -----------------------------------------------------------------
-
-    async def configure_workplace_in_graph(
-        self, request: ConfigureWorkplaceInGraphRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Проверяем, существует ли уже рабочее место
-        existing_workplace = None
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                existing_workplace = workplace
-                break
-
-        worker = Worker()
-        if request.worker_id:
-            worker.worker_id = request.worker_id
-            worker.name = f"Работник {request.worker_id}"
-            worker.qualification = 4
-            worker.specialty = "Оператор"
-            worker.salary = 60000
-
-        equipment = Equipment()
-        if request.equipment_id:
-            equipment.equipment_id = request.equipment_id
-            equipment.name = f"Оборудование {request.equipment_id}"
-            equipment.reliability = 0.9
-            equipment.maintenance_period = 30
-            equipment.maintenance_cost = 40000
-            equipment.cost = 1000000
-            equipment.repair_cost = 200000
-            equipment.repair_time = 3
-
-        workplace = Workplace(
-            workplace_id=request.workplace_id,
-            workplace_name=f"Рабочее место {request.workplace_id}",
-            required_speciality=request.workplace_type or "Общая",
-            required_qualification=4,
-            worker=worker,
-            equipment=equipment,
-            required_stages=[],
-            is_start_node=request.is_start_node,
-            is_end_node=request.is_end_node,
-            next_workplace_ids=list(request.next_workplace_ids),
-        )
-
-        if existing_workplace:
-            existing_workplace.CopyFrom(workplace)
-        else:
-            simulation.parameters.processes.workplaces.append(workplace)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def remove_workplace_from_graph(
-        self, request: RemoveWorkplaceFromGraphRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Удаляем рабочее место
-        workplaces_to_keep = [
-            w
-            for w in simulation.parameters.processes.workplaces
-            if w.workplace_id != request.workplace_id
-        ]
-        simulation.parameters.processes.workplaces.clear()
-        simulation.parameters.processes.workplaces.extend(workplaces_to_keep)
-
-        # Удаляем маршруты, связанные с этим рабочим местом
-        routes_to_keep = [
-            r
-            for r in simulation.parameters.processes.routes
-            if r.from_workplace != request.workplace_id
-            and r.to_workplace != request.workplace_id
-        ]
-        simulation.parameters.processes.routes.clear()
-        simulation.parameters.processes.routes.extend(routes_to_keep)
-
-        # Обновляем next_workplace_ids у других рабочих мест
-        for workplace in simulation.parameters.processes.workplaces:
-            if request.workplace_id in workplace.next_workplace_ids:
-                next_ids_to_keep = [
-                    wid
-                    for wid in workplace.next_workplace_ids
-                    if wid != request.workplace_id
-                ]
-                workplace.next_workplace_ids.clear()
-                workplace.next_workplace_ids.extend(next_ids_to_keep)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_workplace_as_start_node(
-        self, request: SetWorkplaceAsStartNodeRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Сбрасываем все start_node
-        for workplace in simulation.parameters.processes.workplaces:
-            workplace.is_start_node = False
-
-        # Устанавливаем указанное рабочее место как начальное
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                workplace.is_start_node = True
-                break
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_workplace_as_end_node(
-        self, request: SetWorkplaceAsEndNodeRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Сбрасываем все end_node
-        for workplace in simulation.parameters.processes.workplaces:
-            workplace.is_end_node = False
-
-        # Устанавливаем указанное рабочее место как конечное
-        for workplace in simulation.parameters.processes.workplaces:
-            if workplace.workplace_id == request.workplace_id:
-                workplace.is_end_node = True
-                workplace.next_workplace_ids.clear()  # Конечное не имеет следующих
-                break
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
 
     async def update_process_graph(
         self, request: UpdateProcessGraphRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Обновляет граф процесса."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            process_graph = proto_process_graph_to_domain(request.process_graph)
+            params = self._get_simulation_parameters(simulation)
+            params.set_process_graph(process_graph)
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.processes.CopyFrom(request.process_graph)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     # -----------------------------------------------------------------
-    #          Распределение производственного плана (Производство)
+    #          Распределение производственного плана
     # -----------------------------------------------------------------
 
-    async def distribute_production_plan(
-        self, request: DistributeProductionPlanRequest, context
-    ) -> ProductionPlanDistributionResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return ProductionPlanDistributionResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Очищаем предыдущие распределения
-        simulation.parameters.ClearField("production_assignments")
-
-        assignments = []
-        total_assigned = 0
-
-        if (
-            simulation.parameters.production_schedule
-            and simulation.parameters.workshop_plan
-        ):
-            # Простое распределение: каждому заданию - первое доступное рабочее место
-            for (
-                schedule_item
-            ) in simulation.parameters.production_schedule.schedule_items:
-                if simulation.parameters.workshop_plan.workplace_nodes:
-                    workplace_node = (
-                        simulation.parameters.workshop_plan.workplace_nodes[0]
-                    )
-
-                    assignment = ProductionPlanAssignment(
-                        schedule_item_id=schedule_item.item_id,
-                        workplace_id=workplace_node.workplace_id,
-                        assigned_quantity=schedule_item.planned_quantity,
-                        assigned_worker_id=(
-                            workplace_node.assigned_worker.worker_id
-                            if workplace_node.assigned_worker.worker_id
-                            else ""
-                        ),
-                        assigned_equipment_id=(
-                            workplace_node.assigned_equipment.equipment_id
-                            if workplace_node.assigned_equipment.equipment_id
-                            else ""
-                        ),
-                        completion_percentage=0.0,
-                    )
-
-                    assignments.append(assignment)
-                    simulation.parameters.production_assignments[
-                        schedule_item.item_id
-                    ].CopyFrom(assignment)
-                    total_assigned += schedule_item.planned_quantity
-
-        return ProductionPlanDistributionResponse(
-            assignments=assignments,
-            efficiency_score=0.85,
-            total_assigned_quantity=total_assigned,
-            warnings=(
-                ["Распределение выполнено в упрощенном режиме"] if assignments else []
-            ),
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def get_production_plan_distribution(
-        self, request: GetProductionPlanDistributionRequest, context
-    ) -> ProductionPlanDistributionResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return ProductionPlanDistributionResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        assignments = list(simulation.parameters.production_assignments.values())
-        total_assigned = sum(a.assigned_quantity for a in assignments)
-
-        return ProductionPlanDistributionResponse(
-            assignments=assignments,
-            efficiency_score=0.85,
-            total_assigned_quantity=total_assigned,
-            warnings=[],
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def update_production_assignment(
-        self, request: UpdateProductionAssignmentRequest, context
+    async def set_production_plan_row(
+        self, request: SetProductionPlanRowRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает/обновляет строку производственного плана."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            row = proto_production_plan_row_to_domain(request.row)
+            params = self._get_simulation_parameters(simulation)
+            # Используем метод из SimulationParameters вместо прямого доступа к production_schedule
+            params.set_production_plan_row(row)
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.production_assignments[
-            request.assignment.schedule_item_id
-        ].CopyFrom(request.assignment)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def update_workshop_plan(
-        self, request: UpdateWorkshopPlanRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.workshop_plan.CopyFrom(request.workshop_plan)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     # -----------------------------------------------------------------
     #          Конфигурация тендеров
@@ -1140,60 +587,48 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def add_tender(
         self, request: AddTenderRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Добавляет тендер к симуляции."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            tender_repo = TenderRepository(session)
+            tender = await tender_repo.get(request.tender_id)
 
-        # Создаем тестового заказчика
-        consumer = Consumer(
-            consumer_id="test_consumer",
-            name="Тестовый заказчик",
-            type="Коммерческая",
-        )
+            if tender is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Тендер с ID {request.tender_id} не найден")
+                return SimulationResponse()
 
-        # Создаем тестовый тендер
-        tender = Tender(
-            tender_id=request.tender_id,
-            consumer=consumer,
-            cost=1000000,
-            quantity_of_products=5,
-            penalty_per_day=500000,
-            warranty_years=2,
-            payment_form="100% по факту",
-        )
+            params = self._get_simulation_parameters(simulation)
+            params.add_tender(tender)
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.tenders.append(tender)
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def delete_tender(
         self, request: RemoveTenderRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Удаляет тендер из симуляции."""
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def remove_tender(sim):
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            params.remove_tender(request.tender_id)
 
-        simulation = self.simulations[simulation_id]
-
-        tenders_to_keep = [
-            t for t in simulation.parameters.tenders if t.tender_id != request.tender_id
-        ]
-        simulation.parameters.tenders.clear()
-        simulation.parameters.tenders.extend(tenders_to_keep)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
+        return await self._update_and_save(
+            request.simulation_id,
+            remove_tender,
+            context,
         )
 
     # -----------------------------------------------------------------
@@ -1203,101 +638,60 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def set_dealing_with_defects(
         self, request: SetDealingWithDefectsRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает политику работы с дефектами."""
+        from domain import DealingWithDefects
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def update_policy(sim):
+            try:
+                policy = DealingWithDefects(request.dealing_with_defects)
+            except (ValueError, KeyError):
+                policy = DealingWithDefects.NONE
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            params.set_dealing_with_defects(policy)
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.dealing_with_defects = request.dealing_with_defects
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_has_certification(
-        self, request: SetHasCertificationRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.has_certification = request.has_certification
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def add_production_improvement(
-        self, request: AddProductionImprovementRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.production_improvements.append(
-            request.production_improvement
-        )
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def delete_production_improvement(
-        self, request: DeleteProductionImprovementRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        improvements_to_keep = [
-            i
-            for i in simulation.parameters.production_improvements
-            if i != request.production_improvement
-        ]
-        simulation.parameters.production_improvements.clear()
-        simulation.parameters.production_improvements.extend(improvements_to_keep)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
+        return await self._update_and_save(
+            request.simulation_id, update_policy, context
         )
 
     async def set_sales_strategy(
         self, request: SetSalesStrategyRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает стратегию продаж."""
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+        def update_strategy(sim):
+            # Получаем параметры напрямую из симуляции
+            if not sim.parameters:
+                raise ValueError("У симуляции нет параметров")
+            params = max(sim.parameters, key=lambda p: p.step)
+            params.set_sales_strategy(request.strategy)
 
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.sales_strategy = request.sales_strategy
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
+        return await self._update_and_save(
+            request.simulation_id, update_strategy, context
         )
+
+    async def set_lean_improvement_status(
+        self, request: SetLeanImprovementStatusRequest, context
+    ) -> SimulationResponse:
+        """Устанавливает статус LEAN улучшения."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
+
+            params = self._get_simulation_parameters(simulation)
+            params.set_lean_improvement_status(request.name, request.is_implemented)
+
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
+
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     # -----------------------------------------------------------------
     #          Специфичные настройки по ролям
@@ -1306,683 +700,249 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def set_quality_inspection(
         self, request: SetQualityInspectionRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает проверку качества для материалов от поставщика."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            # Устанавливаем контроль качества напрямую в сущности поставщика
+            params = self._get_simulation_parameters(simulation)
+            params.set_quality_inspection(
+                request.supplier_id,
+                request.inspection_enabled,
+            )
 
-        simulation = self.simulations[simulation_id]
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        simulation.parameters.quality_inspections.clear()
-        simulation.parameters.quality_inspections[request.material_id].CopyFrom(
-            request.inspection
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_delivery_schedule(
-        self, request: SetDeliveryScheduleRequest, context
+    async def set_delivery_period(
+        self, request: SetDeliveryPeriodRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает период поставок в днях для поставщика."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return SimulationResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
+            # Устанавливаем период поставок напрямую в сущности поставщика
+            params = self._get_simulation_parameters(simulation)
+            params.set_delivery_period(
+                request.supplier_id,
+                request.delivery_period_days,
+            )
 
-        simulation = self.simulations[simulation_id]
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-        # Map fields в protobuf не требуют инициализации, можно сразу использовать
-        simulation.parameters.delivery_schedules[request.supplier_id].CopyFrom(
-            request.schedule
-        )
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     async def set_equipment_maintenance_interval(
         self, request: SetEquipmentMaintenanceIntervalRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
+        """Устанавливает интервал обслуживания оборудования.
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Map fields в protobuf не требуют инициализации, можно сразу использовать
-        simulation.parameters.equipment_maintenance_intervals[request.equipment_id] = (
-            request.interval_days
+        Примечание: интервалы обслуживания хранятся в Equipment на каждом рабочем месте,
+        а не в SimulationParameters. Этот метод требует реализации для поиска и обновления
+        соответствующего оборудования в processes.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details(
+            "Интервалы обслуживания хранятся в Equipment. "
+            "Используйте обновление ProcessGraph для изменения оборудования."
         )
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def update_production_schedule(
-        self, request: UpdateProductionScheduleRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.production_schedule.CopyFrom(request.schedule)
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+        return SimulationResponse()
 
     async def set_certification_status(
         self, request: SetCertificationStatusRequest, context
     ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Ищем сертификацию
-        found = False
-        for cert in simulation.parameters.certifications:
-            if cert.certificate_type == request.certificate_type:
-                cert.is_obtained = request.is_obtained
-                found = True
-                break
-
-        # Если не нашли, добавляем новую
-        if not found:
-            simulation.parameters.certifications.append(
-                Certification(
-                    certificate_type=request.certificate_type,
-                    is_obtained=request.is_obtained,
-                    implementation_cost=500000,
-                    implementation_time_days=90,
-                )
+        """Устанавливает статус сертификации."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
             )
+            if simulation is None:
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def set_lean_improvement_status(
-        self, request: SetLeanImprovementStatusRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Ищем улучшение
-        found = False
-        for improvement in simulation.parameters.lean_improvements:
-            if improvement.improvement_id == request.improvement_id:
-                improvement.is_implemented = request.is_implemented
-                found = True
-                break
-
-        # Если не нашли, добавляем новое
-        if not found:
-            simulation.parameters.lean_improvements.append(
-                LeanImprovement(
-                    improvement_id=request.improvement_id,
-                    name=f"Улучшение {request.improvement_id}",
-                    is_implemented=request.is_implemented,
-                    implementation_cost=200000,
-                    efficiency_gain=0.15,
+            params = self._get_simulation_parameters(simulation)
+            # Используем метод из SimulationParameters
+            try:
+                params.set_certification_status(
+                    request.certificate_type, request.is_obtained
                 )
-            )
+            except ValueError:
+                # Если сертификация не найдена, это ошибка конфигурации
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(
+                    f"Сертификация с типом '{request.certificate_type}' не найдена"
+                )
+                return SimulationResponse()
 
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            saved = await self._save_simulation(session, simulation, context)
+            if saved is None:
+                return SimulationResponse()
 
-    async def set_sales_strategy_with_details(
-        self, request: SetSalesStrategyWithDetailsRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-        simulation.parameters.sales_strategy = request.strategy
-        simulation.parameters.sales_growth_forecast = request.growth_forecast
-        simulation.parameters.unit_production_cost = request.unit_cost
-
-        return SimulationResponse(
-            simulation=simulation,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Возвращаем обновленную симуляцию по ID
+            return await self._build_simulation_response(session, request.simulation_id)
 
     # -----------------------------------------------------------------
     #          Методы получения метрик и мониторинга
     # -----------------------------------------------------------------
 
+    async def _get_metrics_helper(
+        self,
+        simulation_id: str,
+        getter_func: Callable,
+        mapper_func: Callable,
+        response_class: type,
+        context,
+    ):
+        """Универсальный помощник для получения метрик."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(session, simulation_id, context)
+            if simulation is None:
+                return response_class()
+
+            try:
+                metrics = getter_func(simulation)
+                proto_metrics = mapper_func(metrics)
+                return response_class(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return response_class()
+
     async def get_factory_metrics(
         self, request: GetMetricsRequest, context
     ) -> FactoryMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return FactoryMetricsResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        metrics = FactoryMetrics(
-            profitability=0.25 + random.random() * 0.15,  # 25-40%
-            on_time_delivery_rate=0.85 + random.random() * 0.10,  # 85-95%
-            oee=0.75 + random.random() * 0.15,  # 75-90%
-            warehouse_metrics={
-                "materials": WarehouseMetrics(
-                    fill_level=0.35 + random.random() * 0.15,
-                    current_load=350,
-                    max_capacity=1000,
-                    material_levels={"Сталь": 200, "Электроника": 100},
-                ),
-                "products": WarehouseMetrics(
-                    fill_level=0.24 + random.random() * 0.10,
-                    current_load=120,
-                    max_capacity=500,
-                    material_levels={"Готовые": 50, "Комплектующие": 70},
-                ),
-            },
-            total_procurement_cost=1000000 + random.randint(-200000, 200000),
-            defect_rate=0.03 + random.random() * 0.02,  # 3-5%
-        )
-
-        return FactoryMetricsResponse(
-            metrics=metrics,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики завода."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_factory_metrics(),
+            domain_factory_metrics_to_proto,
+            FactoryMetricsResponse,
+            context,
         )
 
     async def get_production_metrics(
         self, request: GetMetricsRequest, context
     ) -> ProductionMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return ProductionMetricsResponse()
-
-        # Генерируем тестовые данные
-        months = [
-            "Янв",
-            "Фев",
-            "Мар",
-            "Апр",
-            "Май",
-            "Июн",
-            "Июл",
-            "Авг",
-            "Сен",
-            "Окт",
-            "Ноя",
-            "Дек",
-        ]
-        monthly_data = []
-        for i, month in enumerate(months[: request.step or 4]):
-            monthly_data.append(
-                ProductionMetrics.MonthlyProductivity(
-                    month=month, units_produced=random.randint(80, 120)
-                )
-            )
-
-        metrics = ProductionMetrics(
-            monthly_productivity=monthly_data,
-            average_equipment_utilization=0.78 + random.random() * 0.12,
-            wip_count=random.randint(50, 100),
-            finished_goods_count=random.randint(200, 300),
-            material_reserves={"Сталь": 200, "Электроника": 100, "Крепеж": 150},
-        )
-
-        # Внеплановый ремонт
-        unplanned_repairs = UnplannedRepair(
-            repairs=[
-                UnplannedRepair.RepairRecord(
-                    month="Янв",
-                    repair_cost=150000,
-                    equipment_id="equipment_001",
-                    reason="Поломка двигателя",
-                ),
-                UnplannedRepair.RepairRecord(
-                    month="Фев",
-                    repair_cost=80000,
-                    equipment_id="equipment_002",
-                    reason="Замена режущего инструмента",
-                ),
-            ],
-            total_repair_cost=230000,
-        )
-
-        return ProductionMetricsResponse(
-            metrics=metrics,
-            unplanned_repairs=unplanned_repairs,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики производства."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_production_metrics(),
+            domain_production_metrics_to_proto,
+            ProductionMetricsResponse,
+            context,
         )
 
     async def get_quality_metrics(
         self, request: GetMetricsRequest, context
     ) -> QualityMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return QualityMetricsResponse()
-
-        metrics = QualityMetrics(
-            defect_percentage=0.035 + random.random() * 0.015,  # 3.5-5%
-            good_output_percentage=96.5 - random.random() * 1.5,  # 95-96.5%
-            defect_causes=[
-                QualityMetrics.DefectCause(
-                    cause="Некачественный материал", count=25, percentage=45.5
-                ),
-                QualityMetrics.DefectCause(
-                    cause="Ошибка оператора", count=15, percentage=27.3
-                ),
-                QualityMetrics.DefectCause(
-                    cause="Неисправность оборудования", count=10, percentage=18.2
-                ),
-                QualityMetrics.DefectCause(
-                    cause="Другие причины", count=5, percentage=9.1
-                ),
-            ],
-            average_material_quality=0.92 + random.random() * 0.04,
-            average_supplier_failure_probability=0.08 + random.random() * 0.04,
-            procurement_volume=4500000 + random.randint(-500000, 500000),
-        )
-
-        return QualityMetricsResponse(
-            metrics=metrics,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики качества."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_quality_metrics(),
+            domain_quality_metrics_to_proto,
+            QualityMetricsResponse,
+            context,
         )
 
     async def get_engineering_metrics(
         self, request: GetMetricsRequest, context
     ) -> EngineeringMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return EngineeringMetricsResponse()
-
-        # Операции и их хронометраж
-        operations = [
-            EngineeringMetrics.OperationTiming(
-                operation_name="Резка металла",
-                cycle_time=45,
-                takt_time=50,
-                timing_cost=12000,
-            ),
-            EngineeringMetrics.OperationTiming(
-                operation_name="Сборка узлов",
-                cycle_time=120,
-                takt_time=130,
-                timing_cost=18000,
-            ),
-            EngineeringMetrics.OperationTiming(
-                operation_name="Контроль качества",
-                cycle_time=30,
-                takt_time=35,
-                timing_cost=8000,
-            ),
-        ]
-
-        # Причины простоев
-        downtimes = [
-            EngineeringMetrics.DowntimeRecord(
-                cause="Переналадка оборудования",
-                total_minutes=240,
-                average_per_shift=30,
-            ),
-            EngineeringMetrics.DowntimeRecord(
-                cause="Отсутствие материалов", total_minutes=180, average_per_shift=22.5
-            ),
-            EngineeringMetrics.DowntimeRecord(
-                cause="Техническое обслуживание",
-                total_minutes=120,
-                average_per_shift=15,
-            ),
-        ]
-
-        # Анализ дефектов (Парето)
-        defects = [
-            EngineeringMetrics.DefectAnalysis(
-                defect_type="Трещины",
-                count=35,
-                percentage=45.5,
-                cumulative_percentage=45.5,
-            ),
-            EngineeringMetrics.DefectAnalysis(
-                defect_type="Неправильные размеры",
-                count=20,
-                percentage=26.0,
-                cumulative_percentage=71.5,
-            ),
-            EngineeringMetrics.DefectAnalysis(
-                defect_type="Заусенцы",
-                count=12,
-                percentage=15.6,
-                cumulative_percentage=87.1,
-            ),
-            EngineeringMetrics.DefectAnalysis(
-                defect_type="Другие",
-                count=10,
-                percentage=12.9,
-                cumulative_percentage=100.0,
-            ),
-        ]
-
-        metrics = EngineeringMetrics(
-            operation_timings=operations,
-            downtime_records=downtimes,
-            defect_analysis=defects,
-        )
-
-        # График хронометража
-        timing_chart = OperationTimingChart(
-            timing_data=[
-                OperationTimingChart.TimingData(
-                    process_name="Резка металла",
-                    cycle_time=45,
-                    takt_time=50,
-                    timing_cost=12000,
-                ),
-                OperationTimingChart.TimingData(
-                    process_name="Сборка узлов",
-                    cycle_time=120,
-                    takt_time=130,
-                    timing_cost=18000,
-                ),
-                OperationTimingChart.TimingData(
-                    process_name="Контроль качества",
-                    cycle_time=30,
-                    takt_time=35,
-                    timing_cost=8000,
-                ),
-            ],
-            chart_type="bar_chart",
-        )
-
-        # График причин простоев
-        downtime_chart = DowntimeChart(
-            downtime_data=[
-                DowntimeChart.DowntimeData(
-                    process_name="Резка металла",
-                    cause="Переналадка",
-                    downtime_minutes=120,
-                ),
-                DowntimeChart.DowntimeData(
-                    process_name="Сборка узлов",
-                    cause="Отсутствие материалов",
-                    downtime_minutes=180,
-                ),
-                DowntimeChart.DowntimeData(
-                    process_name="Контроль качества",
-                    cause="Техническое обслуживание",
-                    downtime_minutes=60,
-                ),
-            ],
-            chart_type="bar_chart",
-        )
-
-        return EngineeringMetricsResponse(
-            metrics=metrics,
-            operation_timing_chart=timing_chart,
-            downtime_chart=downtime_chart,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики инженерии."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_engineering_metrics(),
+            domain_engineering_metrics_to_proto,
+            EngineeringMetricsResponse,
+            context,
         )
 
     async def get_commercial_metrics(
         self, request: GetMetricsRequest, context
     ) -> CommercialMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return CommercialMetricsResponse()
-
-        # Выручка по годам
-        yearly_revenues = []
-        base_year = 2024
-        for i in range(4):
-            revenue = 15000000 + i * 2000000 + random.randint(-500000, 500000)
-            yearly_revenues.append(
-                CommercialMetrics.YearlyRevenue(year=base_year + i, revenue=revenue)
-            )
-
-        metrics = CommercialMetrics(
-            yearly_revenues=yearly_revenues,
-            tender_revenue_plan=25000000,
-            total_payments=18000000,
-            total_receipts=22000000,
-            sales_forecast={
-                "Агрессивная": 0.15,
-                "Умеренная": 0.08,
-                "Консервативная": 0.04,
-            },
-            strategy_costs={
-                "Агрессивная": 85000,
-                "Умеренная": 105000,
-                "Консервативная": 120000,
-            },
-            tender_graph=[
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="ДЗЗ", unit_size="1U", is_mastered=True
-                ),
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="ДЗЗ", unit_size="2U", is_mastered=True
-                ),
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="ДЗЗ", unit_size="3U", is_mastered=False
-                ),
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="Ретрансляция", unit_size="1U", is_mastered=True
-                ),
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="Ретрансляция", unit_size="2U", is_mastered=False
-                ),
-                CommercialMetrics.TenderGraphPoint(
-                    strategy="Научная деятельность", unit_size="1U", is_mastered=True
-                ),
-            ],
-            project_profitabilities=[
-                CommercialMetrics.ProjectProfitability(
-                    project_name="Проект А", profitability=0.28
-                ),
-                CommercialMetrics.ProjectProfitability(
-                    project_name="Проект Б", profitability=0.35
-                ),
-                CommercialMetrics.ProjectProfitability(
-                    project_name="Проект В", profitability=0.22
-                ),
-                CommercialMetrics.ProjectProfitability(
-                    project_name="Проект Г", profitability=0.31
-                ),
-            ],
-            on_time_completed_orders=18,
-        )
-
-        # График освоенных моделей
-        model_mastery_chart = ModelMasteryChart(
-            model_points=[
-                ModelMasteryChart.ModelPoint(
-                    strategy="ДЗЗ",
-                    unit_size="1U",
-                    is_mastered=True,
-                    model_name="Спутник связи",
-                ),
-                ModelMasteryChart.ModelPoint(
-                    strategy="ДЗЗ",
-                    unit_size="2U",
-                    is_mastered=True,
-                    model_name="Ретранслятор",
-                ),
-                ModelMasteryChart.ModelPoint(
-                    strategy="ДЗЗ",
-                    unit_size="3U",
-                    is_mastered=False,
-                    model_name="Многофункциональный",
-                ),
-                ModelMasteryChart.ModelPoint(
-                    strategy="Ретрансляция",
-                    unit_size="1U",
-                    is_mastered=True,
-                    model_name="Транспондер",
-                ),
-                ModelMasteryChart.ModelPoint(
-                    strategy="Ретрансляция",
-                    unit_size="2U",
-                    is_mastered=False,
-                    model_name="Усилитель",
-                ),
-                ModelMasteryChart.ModelPoint(
-                    strategy="Научная деятельность",
-                    unit_size="1U",
-                    is_mastered=True,
-                    model_name="Исследовательский",
-                ),
-            ]
-        )
-
-        # График рентабельности проектов
-        project_chart = ProjectProfitabilityChart(
-            projects=[
-                ProjectProfitabilityChart.ProjectData(
-                    project_name="Проект А", profitability=0.28
-                ),
-                ProjectProfitabilityChart.ProjectData(
-                    project_name="Проект Б", profitability=0.35
-                ),
-                ProjectProfitabilityChart.ProjectData(
-                    project_name="Проект В", profitability=0.22
-                ),
-                ProjectProfitabilityChart.ProjectData(
-                    project_name="Проект Г", profitability=0.31
-                ),
-            ],
-            chart_type="bar_chart",
-        )
-
-        return CommercialMetricsResponse(
-            metrics=metrics,
-            model_mastery_chart=model_mastery_chart,
-            project_profitability_chart=project_chart,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики коммерции."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_commercial_metrics(),
+            domain_commercial_metrics_to_proto,
+            CommercialMetricsResponse,
+            context,
         )
 
     async def get_procurement_metrics(
         self, request: GetMetricsRequest, context
     ) -> ProcurementMetricsResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return ProcurementMetricsResponse()
-
-        supplier_performances = [
-            ProcurementMetrics.SupplierPerformance(
-                supplier_id="supplier_001",
-                delivered_quantity=1250,
-                projected_defect_rate=0.08,
-                planned_reliability=0.95,
-                actual_reliability=0.92,
-                planned_cost=1500000,
-                actual_cost=1450000,
-                actual_defect_count=15,
-            ),
-            ProcurementMetrics.SupplierPerformance(
-                supplier_id="supplier_002",
-                delivered_quantity=850,
-                projected_defect_rate=0.05,
-                planned_reliability=0.90,
-                actual_reliability=0.88,
-                planned_cost=1200000,
-                actual_cost=1180000,
-                actual_defect_count=8,
-            ),
-        ]
-
-        metrics = ProcurementMetrics(
-            supplier_performances=supplier_performances, total_procurement_value=2630000
-        )
-
-        return ProcurementMetricsResponse(
-            metrics=metrics,
-            timestamp=datetime.now().isoformat(),
+        """Получает метрики закупок."""
+        return await self._get_metrics_helper(
+            request.simulation_id,
+            lambda sim: sim.get_procurement_metrics(),
+            domain_procurement_metrics_to_proto,
+            ProcurementMetricsResponse,
+            context,
         )
 
     async def get_all_metrics(
         self, request: GetAllMetricsRequest, context
     ) -> AllMetricsResponse:
-        simulation_id = request.simulation_id
+        """Получает все метрики."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return AllMetricsResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return AllMetricsResponse()
+            try:
+                factory_metrics = domain_factory_metrics_to_proto(
+                    simulation.get_factory_metrics()
+                )
+                production_metrics = domain_production_metrics_to_proto(
+                    simulation.get_production_metrics()
+                )
+                quality_metrics = domain_quality_metrics_to_proto(
+                    simulation.get_quality_metrics()
+                )
+                engineering_metrics = domain_engineering_metrics_to_proto(
+                    simulation.get_engineering_metrics()
+                )
+                commercial_metrics = domain_commercial_metrics_to_proto(
+                    simulation.get_commercial_metrics()
+                )
+                procurement_metrics = domain_procurement_metrics_to_proto(
+                    simulation.get_procurement_metrics()
+                )
 
-        # Получаем все метрики
-        factory_metrics = await self.get_factory_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-        production_metrics = await self.get_production_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-        quality_metrics = await self.get_quality_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-        engineering_metrics = await self.get_engineering_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-        commercial_metrics = await self.get_commercial_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-        procurement_metrics = await self.get_procurement_metrics(
-            GetMetricsRequest(simulation_id=simulation_id), context
-        )
-
-        return AllMetricsResponse(
-            factory=factory_metrics.metrics,
-            production=production_metrics.metrics,
-            quality=quality_metrics.metrics,
-            engineering=engineering_metrics.metrics,
-            commercial=commercial_metrics.metrics,
-            procurement=procurement_metrics.metrics,
-            timestamp=datetime.now().isoformat(),
-        )
+                return AllMetricsResponse(
+                    factory=factory_metrics,
+                    production=production_metrics,
+                    quality=quality_metrics,
+                    engineering=engineering_metrics,
+                    commercial=commercial_metrics,
+                    procurement=procurement_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении всех метрик: {str(e)}")
+                return AllMetricsResponse()
 
     # -----------------------------------------------------------------
     #          Методы получения данных для вкладок
@@ -1991,373 +951,262 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def get_production_schedule(
         self, request: GetProductionScheduleRequest, context
     ) -> ProductionScheduleResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return ProductionScheduleResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Если нет расписания, создаем тестовое
-        if not simulation.parameters.HasField("production_schedule"):
-            new_schedule = ProductionSchedule(
-                schedule_items=[
-                    ProductionSchedule.ScheduleItem(
-                        item_id="item_001",
-                        priority=1,
-                        plan_number="П-001",
-                        plan_date="2024-01-15",
-                        product_name="Спутник связи",
-                        planned_quantity=10,
-                        actual_quantity=3,
-                        remaining_to_produce=7,
-                        planned_completion_date="2024-03-15",
-                        order_number="ЗАК-001",
-                        tender_id="tender_001",
-                    )
-                ]
+        """Получает производственное расписание."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
             )
-            simulation.parameters.production_schedule.CopyFrom(new_schedule)
+            if simulation is None:
+                return ProductionScheduleResponse()
 
-        return ProductionScheduleResponse(
-            schedule=simulation.parameters.production_schedule,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Получаем последний step из parameters для получения актуального производственного плана
+            if not simulation.parameters:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("Параметры симуляции не найдены")
+                return ProductionScheduleResponse()
+
+            last_step = max(p.step for p in simulation.parameters)
+            production_schedule = simulation.get_production_schedule(last_step)
+            if production_schedule is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("Производственный план не найден")
+                return ProductionScheduleResponse()
+
+            from application.proto_mappers import domain_production_schedule_to_proto
+
+            proto_schedule = domain_production_schedule_to_proto(production_schedule)
+
+            return ProductionScheduleResponse(
+                schedule=proto_schedule,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_workshop_plan(
         self, request: GetWorkshopPlanRequest, context
     ) -> WorkshopPlanResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return WorkshopPlanResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Если нет плана цеха, создаем тестовый
-        if not simulation.parameters.HasField("workshop_plan"):
-            new_workshop_plan = WorkshopPlan(
-                workplace_nodes=[
-                    WorkshopPlan.WorkplaceNode(
-                        workplace_id="workplace_001",
-                        assigned_worker=Worker(
-                            worker_id="worker_001",
-                            name="Иванов И.И.",
-                            qualification=5,
-                            specialty="Слесарь",
-                            salary=75000,
-                        ),
-                        assigned_equipment=Equipment(
-                            equipment_id="equipment_001",
-                            name="Токарный станок",
-                            reliability=0.95,
-                            maintenance_period=30,
-                            maintenance_cost=50000,
-                            cost=1500000,
-                            repair_cost=300000,
-                            repair_time=5,
-                        ),
-                        maintenance_interval=30,
-                        is_start_node=True,
-                        is_end_node=False,
-                        assigned_schedule_items=["item_001"],
-                        max_capacity_per_day=2,
-                        current_utilization=0.75,
-                    )
-                ],
-                logistic_routes=[
-                    Route(
-                        length=10,
-                        from_workplace="workplace_001",
-                        to_workplace="workplace_002",
-                    ),
-                    Route(
-                        length=15,
-                        from_workplace="workplace_002",
-                        to_workplace="workplace_003",
-                    ),
-                ],
-                production_schedule_id="schedule_001",
+        """Получает план цеха (возвращает processes)."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
             )
-            simulation.parameters.workshop_plan.CopyFrom(new_workshop_plan)
+            if simulation is None:
+                return WorkshopPlanResponse()
 
-        return WorkshopPlanResponse(
-            workshop_plan=simulation.parameters.workshop_plan,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Получаем последний step из parameters для получения актуального плана цеха
+            if not simulation.parameters:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("Параметры симуляции не найдены")
+                return WorkshopPlanResponse()
+
+            last_step = max(p.step for p in simulation.parameters)
+            workshop_plan = simulation.get_workshop_plan(last_step)
+            if workshop_plan is None:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details("План цеха не найден")
+                return WorkshopPlanResponse()
+
+            from application.proto_mappers import domain_process_graph_to_proto
+
+            proto_workshop_plan = domain_process_graph_to_proto(workshop_plan)
+
+            return WorkshopPlanResponse(
+                workshop_plan=proto_workshop_plan,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_unplanned_repair(
         self, request: GetUnplannedRepairRequest, context
     ) -> UnplannedRepairResponse:
-        simulation_id = request.simulation_id
+        """Получает данные о внеплановом ремонте."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return UnplannedRepairResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return UnplannedRepairResponse()
+            # Получаем данные о внеплановом ремонте через метод из Simulation
+            # Получаем последний step из parameters
+            if not simulation.parameters:
+                return UnplannedRepairResponse(
+                    unplanned_repair=None,
+                    timestamp=datetime.now().isoformat(),
+                )
 
-        # Тестовые данные о внеплановом ремонте
-        unplanned_repair = UnplannedRepair(
-            repairs=[
-                UnplannedRepair.RepairRecord(
-                    month="Янв",
-                    repair_cost=150000,
-                    equipment_id="equipment_001",
-                    reason="Поломка двигателя",
-                ),
-                UnplannedRepair.RepairRecord(
-                    month="Фев",
-                    repair_cost=80000,
-                    equipment_id="equipment_002",
-                    reason="Замена режущего инструмента",
-                ),
-                UnplannedRepair.RepairRecord(
-                    month="Мар",
-                    repair_cost=120000,
-                    equipment_id="equipment_003",
-                    reason="Ремонт системы ЧПУ",
-                ),
-            ],
-            total_repair_cost=350000,
-        )
+            last_step = max(p.step for p in simulation.parameters)
+            unplanned_repair_domain = simulation.get_unplanned_repair(last_step)
 
-        return UnplannedRepairResponse(
-            unplanned_repair=unplanned_repair,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Если данных нет, возвращаем None
+            if unplanned_repair_domain is None:
+                return UnplannedRepairResponse(
+                    unplanned_repair=None,
+                    timestamp=datetime.now().isoformat(),
+                )
+
+            # Преобразуем доменный объект в proto (если маппер существует)
+            # Пока возвращаем None, так как UnplannedRepair может не быть реализован
+            return UnplannedRepairResponse(
+                unplanned_repair=None,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_warehouse_load_chart(
         self, request: GetWarehouseLoadChartRequest, context
     ) -> WarehouseLoadChartResponse:
-        simulation_id = request.simulation_id
+        """Получает график загрузки склада."""
+        import random
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return WarehouseLoadChartResponse()
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return WarehouseLoadChartResponse()
 
-        # Генерируем тестовые данные для графика загрузки
-        data_points = []
-        max_capacity = 1000 if request.warehouse_id.endswith("materials") else 500
-
-        for i in range(30):  # 30 дней
-            load = random.randint(200, max_capacity - 100)
-            data_points.append(
-                WarehouseLoadChart.LoadPoint(
-                    timestamp=f"2024-01-{i+1:02d}", load=load, max_capacity=max_capacity
-                )
+            # Получаем график загрузки склада через метод из Simulation
+            # Определяем тип склада из warehouse_id
+            warehouse_type = (
+                "materials"
+                if request.warehouse_id.endswith("materials")
+                else "products"
             )
 
-        chart = WarehouseLoadChart(
-            data_points=data_points, warehouse_id=request.warehouse_id
-        )
+            # Получаем последний step из parameters
+            if not simulation.parameters:
+                return WarehouseLoadChartResponse(
+                    chart=None,
+                    timestamp=datetime.now().isoformat(),
+                )
 
-        return WarehouseLoadChartResponse(
-            chart=chart,
-            timestamp=datetime.now().isoformat(),
-        )
+            last_step = max(p.step for p in simulation.parameters)
+            chart_data = simulation.get_warehouse_load_chart(warehouse_type, last_step)
+
+            if not chart_data:
+                return WarehouseLoadChartResponse(
+                    chart=None,
+                    timestamp=datetime.now().isoformat(),
+                )
+
+            # Преобразуем данные из домена в proto формат
+            load_over_time = chart_data.get("load", [])
+            max_capacity_over_time = chart_data.get("max_capacity", [])
+
+            data_points = []
+            for i, (load, max_cap) in enumerate(
+                zip(load_over_time, max_capacity_over_time)
+            ):
+                data_points.append(
+                    WarehouseLoadChart.LoadPoint(
+                        timestamp=f"2024-01-{i+1:02d}",
+                        load=load,
+                        max_capacity=max_cap,
+                    )
+                )
+
+            chart = WarehouseLoadChart(
+                data_points=data_points, warehouse_id=request.warehouse_id
+            )
+
+            return WarehouseLoadChartResponse(
+                chart=chart,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_required_materials(
         self, request: GetRequiredMaterialsRequest, context
     ) -> RequiredMaterialsResponse:
-        simulation_id = request.simulation_id
+        """Получает список необходимых материалов."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return RequiredMaterialsResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return RequiredMaterialsResponse()
+            # Получаем требуемые материалы через метод из SimulationParameters
+            if not simulation.parameters:
+                return RequiredMaterialsResponse(
+                    materials=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
-        # Тестовые данные о необходимых материалах
-        materials = [
-            RequiredMaterial(
-                material_id="mat_001",
-                name="Листовой металл",
-                has_contracted_supplier=True,
-                required_quantity=500,
-                current_stock=200,
-            ),
-            RequiredMaterial(
-                material_id="mat_002",
-                name="Электронные компоненты",
-                has_contracted_supplier=True,
-                required_quantity=1000,
-                current_stock=450,
-            ),
-            RequiredMaterial(
-                material_id="mat_003",
-                name="Крепежные изделия",
-                has_contracted_supplier=False,
-                required_quantity=2000,
-                current_stock=800,
-            ),
-            RequiredMaterial(
-                material_id="mat_004",
-                name="Пластик ABS",
-                has_contracted_supplier=True,
-                required_quantity=300,
-                current_stock=150,
-            ),
-        ]
+            params = max(simulation.parameters, key=lambda p: p.step)
+            required_materials = params.get_required_materials()
 
-        return RequiredMaterialsResponse(
-            materials=materials,
-            timestamp=datetime.now().isoformat(),
-        )
+            from application.proto_mappers import domain_required_material_to_proto
+
+            proto_materials = [
+                domain_required_material_to_proto(mat) for mat in required_materials
+            ]
+
+            return RequiredMaterialsResponse(
+                materials=proto_materials,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_available_improvements(
         self, request: GetAvailableImprovementsRequest, context
     ) -> AvailableImprovementsResponse:
-        simulation_id = request.simulation_id
+        """Получает доступные улучшения."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return AvailableImprovementsResponse()
 
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return AvailableImprovementsResponse()
+            # Используем метод из SimulationParameters для получения доступных улучшений
+            if not simulation.parameters:
+                return AvailableImprovementsResponse(
+                    improvements=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
-        simulation = self.simulations[simulation_id]
+            params = max(simulation.parameters, key=lambda p: p.step)
+            improvement_names = params.get_available_improvements()
 
-        return AvailableImprovementsResponse(
-            improvements=simulation.parameters.lean_improvements,
-            timestamp=datetime.now().isoformat(),
-        )
+            # Преобразуем имена улучшений в proto LeanImprovement объекты
+            # Берем полные объекты из production_improvements для преобразования
+            from application.proto_mappers import domain_lean_improvement_to_proto
+
+            proto_improvements = []
+            improvement_names_set = set(improvement_names)
+            for imp in params.production_improvements:
+                if imp.name in improvement_names_set:
+                    proto_improvements.append(domain_lean_improvement_to_proto(imp))
+
+            return AvailableImprovementsResponse(
+                improvements=proto_improvements,
+                timestamp=datetime.now().isoformat(),
+            )
 
     async def get_defect_policies(
         self, request: GetDefectPoliciesRequest, context
     ) -> DefectPoliciesResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return DefectPoliciesResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        available_policies = [
-            "Утилизировать",
-            "Переделать",
-            "Продать как есть",
-            "Вернуть поставщику",
-        ]
-
-        return DefectPoliciesResponse(
-            available_policies=available_policies,
-            current_policy=simulation.parameters.dealing_with_defects or "Переделать",
-            timestamp=datetime.now().isoformat(),
-        )
-
-    # -----------------------------------------------------------------
-    #          Пошаговая симуляция
-    # -----------------------------------------------------------------
-
-    async def run_simulation_step(
-        self, request: RunSimulationStepRequest, context
-    ) -> SimulationStepResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationStepResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Выполняем шаги симуляции
-        for step in range(min(request.step_count, 4 - simulation.step)):
-            simulation.step += 1
-
-            # Обновляем капитал (упрощенная модель)
-            profit = random.randint(-200000, 500000)
-            simulation.capital += profit
-
-            # Обновляем результаты
-            simulation.results.profit += profit
-            simulation.results.cost += random.randint(100000, 300000)
-            simulation.results.profitability = (
-                simulation.results.profit / simulation.results.cost
-                if simulation.results.cost > 0
-                else 0
+        """Получает политики работы с дефектами."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
             )
+            if simulation is None:
+                return DefectPoliciesResponse()
 
-            # Сохраняем шаг в историю
-            step_response = SimulationStepResponse(
-                simulation=Simulation(
-                    capital=simulation.capital,
-                    step=simulation.step,
-                    simulation_id=simulation.simulation_id,
-                    parameters=simulation.parameters,
-                    results=simulation.results,
-                    room_id=simulation.room_id,
-                    is_completed=simulation.is_completed,
-                ),
+            # Используем метод из SimulationParameters для получения политик дефектов
+            if not simulation.parameters:
+                return DefectPoliciesResponse(
+                    available_policies=[],
+                    current_policy="",
+                    timestamp=datetime.now().isoformat(),
+                )
+
+            params = max(simulation.parameters, key=lambda p: p.step)
+            available_policies, current_policy = params.get_defect_policies()
+
+            return DefectPoliciesResponse(
+                available_policies=available_policies,
+                current_policy=current_policy,
                 timestamp=datetime.now().isoformat(),
             )
-
-            if simulation_id not in self.simulation_history:
-                self.simulation_history[simulation_id] = []
-            self.simulation_history[simulation_id].append(step_response)
-
-        # Проверяем завершение симуляции
-        if simulation.step >= 4:
-            simulation.is_completed = True
-
-        # Получаем метрики для текущего шага
-        factory_metrics = await self.get_factory_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-        production_metrics = await self.get_production_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-        quality_metrics = await self.get_quality_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-        engineering_metrics = await self.get_engineering_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-        commercial_metrics = await self.get_commercial_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-        procurement_metrics = await self.get_procurement_metrics(
-            GetMetricsRequest(simulation_id=simulation_id, step=simulation.step),
-            context,
-        )
-
-        return SimulationStepResponse(
-            simulation=simulation,
-            factory_metrics=factory_metrics.metrics,
-            production_metrics=production_metrics.metrics,
-            quality_metrics=quality_metrics.metrics,
-            engineering_metrics=engineering_metrics.metrics,
-            commercial_metrics=commercial_metrics.metrics,
-            procurement_metrics=procurement_metrics.metrics,
-            timestamp=datetime.now().isoformat(),
-        )
-
-    async def get_simulation_history(
-        self, request: GetSimulationHistoryRequest, context
-    ) -> SimulationHistoryResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationHistoryResponse()
-
-        history = self.simulation_history.get(simulation_id, [])
-
-        return SimulationHistoryResponse(
-            steps=history,
-            timestamp=datetime.now().isoformat(),
-        )
 
     # -----------------------------------------------------------------
     #          Валидация
@@ -2366,142 +1215,156 @@ class SimulationServiceImpl(SimulationServiceServicer):
     async def validate_configuration(
         self, request: ValidateConfigurationRequest, context
     ) -> ValidationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            return ValidationResponse(
-                is_valid=False,
-                errors=[f"Симуляция с ID {simulation_id} не найдена"],
-                warnings=[],
-                timestamp=datetime.now().isoformat(),
+        """Валидирует конфигурацию симуляции."""
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
             )
+            if simulation is None:
+                return ValidationResponse(
+                    is_valid=False,
+                    errors=[f"Симуляция с ID {request.simulation_id} не найдена"],
+                    warnings=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
-        simulation = self.simulations[simulation_id]
-        errors = []
-        warnings = []
-
-        # Проверяем обязательные параметры
-
-        # Проверка логиста
-        if not simulation.parameters.logist.worker_id:
-            errors.append("Не выбран логист")
-
-        # Проверка поставщиков
-        if not simulation.parameters.suppliers:
-            errors.append("Не выбраны основные поставщики")
-
-        # Проверка складов
-        if simulation.parameters.materials_warehouse.size == 0:
-            warnings.append("Размер склада материалов не задан")
-
-        # Проверка производственного графа
-        if not simulation.parameters.processes.workplaces:
-            errors.append("Не настроен производственный граф")
-        else:
-            # Проверяем наличие начального и конечного узлов
-            has_start = any(
-                w.is_start_node for w in simulation.parameters.processes.workplaces
-            )
-            has_end = any(
-                w.is_end_node for w in simulation.parameters.processes.workplaces
-            )
-
-            if not has_start:
-                warnings.append("Не указан начальный узел в производственном графе")
-            if not has_end:
-                warnings.append("Не указан конечный узел в производственном графе")
-
-        # Проверка производственного плана
-        if (
-            not simulation.parameters.HasField("production_schedule")
-            or not simulation.parameters.production_schedule.schedule_items
-        ):
-            warnings.append("Не настроен производственный план")
-
-        # Проверка стратегии продаж
-        if not simulation.parameters.sales_strategy:
-            warnings.append("Не выбрана стратегия продаж")
-
-        return ValidationResponse(
-            is_valid=len(errors) == 0,
-            errors=errors,
-            warnings=warnings,
-            timestamp=datetime.now().isoformat(),
-        )
+            try:
+                result = simulation.validate_configuration()
+                return ValidationResponse(
+                    is_valid=result.get("is_valid", False),
+                    errors=result.get("errors", []),
+                    warnings=result.get("warnings", []),
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error validating configuration: {e}", exc_info=True)
+                return ValidationResponse(
+                    is_valid=False,
+                    errors=[f"Ошибка при валидации: {str(e)}"],
+                    warnings=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
     # -----------------------------------------------------------------
-    #          Справочные данные (прокси к DatabaseManager)
+    #          Справочные данные
     # -----------------------------------------------------------------
-
-    async def get_reference_data(
-        self, request: GetReferenceDataRequest, context
-    ) -> ReferenceDataResponse:
-        # В реальной реализации здесь был бы вызов DatabaseManager
-        # Для тестов возвращаем заглушку
-        return ReferenceDataResponse(timestamp=datetime.now().isoformat())
 
     async def get_material_types(
         self, request: GetMaterialTypesRequest, context
     ) -> MaterialTypesResponse:
-        return MaterialTypesResponse(timestamp=datetime.now().isoformat())
+        """Получение типов материалов."""
+        async with self.session_factory() as session:
+            try:
+                repo = SupplierRepository(session)
+                material_types = await repo.get_distinct_product_names()
+                return MaterialTypesResponse(
+                    material_types=material_types,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting material types: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении типов материалов: {str(e)}")
+                return MaterialTypesResponse(
+                    material_types=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_equipment_types(
         self, request: GetEquipmentTypesRequest, context
     ) -> EquipmentTypesResponse:
-        return EquipmentTypesResponse(timestamp=datetime.now().isoformat())
+        """Получение типов оборудования."""
+        async with self.session_factory() as session:
+            try:
+                repo = EquipmentRepository(session)
+                equipment_types = await repo.get_distinct_equipment_types()
+                return EquipmentTypesResponse(
+                    equipment_types=equipment_types,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting equipment types: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(
+                    f"Ошибка при получении типов оборудования: {str(e)}"
+                )
+                return EquipmentTypesResponse(
+                    equipment_types=[],
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_workplace_types(
         self, request: GetWorkplaceTypesRequest, context
     ) -> WorkplaceTypesResponse:
-        return WorkplaceTypesResponse(timestamp=datetime.now().isoformat())
+        """Получение типов рабочих мест."""
+        from domain.reference_data import WorkplaceType
+
+        return WorkplaceTypesResponse(
+            workplace_types=[wt.value for wt in WorkplaceType],
+            timestamp=datetime.now().isoformat(),
+        )
 
     async def get_available_defect_policies(
         self, request: GetAvailableDefectPoliciesRequest, context
     ) -> DefectPoliciesListResponse:
-        return DefectPoliciesListResponse(timestamp=datetime.now().isoformat())
+        """Получение доступных политик работы с браком."""
+        from domain import DealingWithDefects
+
+        policies = [
+            policy.value
+            for policy in DealingWithDefects
+            if policy != DealingWithDefects.NONE
+        ]
+        return DefectPoliciesListResponse(
+            policies=policies,
+            timestamp=datetime.now().isoformat(),
+        )
 
     async def get_available_improvements_list(
         self, request: GetAvailableImprovementsListRequest, context
     ) -> ImprovementsListResponse:
-        return ImprovementsListResponse(timestamp=datetime.now().isoformat())
+        """Получение доступных LEAN улучшений."""
+        from domain import ProductImpruvement
+
+        improvements = [
+            improvement.value
+            for improvement in ProductImpruvement
+            if improvement != ProductImpruvement.NONE
+        ]
+        return ImprovementsListResponse(
+            improvements=improvements,
+            timestamp=datetime.now().isoformat(),
+        )
 
     async def get_available_certifications(
         self, request: GetAvailableCertificationsRequest, context
     ) -> CertificationsListResponse:
-        return CertificationsListResponse(timestamp=datetime.now().isoformat())
+        """Получение доступных сертификаций."""
+        from domain.reference_data import Certification
+
+        return CertificationsListResponse(
+            certifications=[cert.value for cert in Certification],
+            timestamp=datetime.now().isoformat(),
+        )
 
     async def get_available_sales_strategies(
         self, request: GetAvailableSalesStrategiesRequest, context
     ) -> SalesStrategiesListResponse:
-        return SalesStrategiesListResponse(timestamp=datetime.now().isoformat())
+        """Получение доступных стратегий продаж."""
+        from domain import SaleStrategest
 
-    # -----------------------------------------------------------------
-    #          Старые методы (для обратной совместимости)
-    # -----------------------------------------------------------------
-
-    async def run_simulation(
-        self, request: RunSimulationRequest, context
-    ) -> SimulationResponse:
-        simulation_id = request.simulation_id
-
-        if simulation_id not in self.simulations:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Симуляция с ID {simulation_id} не найдена")
-            return SimulationResponse()
-
-        simulation = self.simulations[simulation_id]
-
-        # Запускаем полную симуляцию (4 шага)
-        step_response = await self.run_simulation_step(
-            RunSimulationStepRequest(simulation_id=simulation_id, step_count=4), context
-        )
-
-        return SimulationResponse(
-            simulation=step_response.simulation,
+        strategies = [
+            strategy.value
+            for strategy in SaleStrategest
+            if strategy != SaleStrategest.NONE
+        ]
+        return SalesStrategiesListResponse(
+            strategies=strategies,
             timestamp=datetime.now().isoformat(),
         )
 
     async def ping(self, request: PingRequest, context) -> SuccessResponse:
+        """Проверка работоспособности сервиса."""
         return SuccessResponse(
             success=True,
             message="Simulation service is running",

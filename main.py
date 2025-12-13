@@ -36,9 +36,12 @@ async def lifespan():
 
 async def main():
     from infrastructure.config import app_logger
+    from infrastructure.database import AsyncSessionLocal
 
-    simulation_service = SimulationServiceImpl()
-    db_manager_service = SimulationDatabaseManagerImpl()
+    simulation_service = SimulationServiceImpl(session_factory=AsyncSessionLocal)
+    db_manager_service = SimulationDatabaseManagerImpl(
+        session_factory=AsyncSessionLocal
+    )
 
     async with lifespan():
         try:

@@ -1,7 +1,9 @@
 .venv
 poetry.lock
 __pycache__
+.pytest_cache
 
 postgres_data
 redis_data
 logs
+TODO.md

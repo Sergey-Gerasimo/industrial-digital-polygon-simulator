@@ -2,6 +2,10 @@ from typing import Dict, List, Optional
 import uuid
 from datetime import datetime
 import grpc
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+import logging
+
 from grpc_generated.simulator_pb2 import (
     # Основные сообщения
     Supplier,
@@ -14,34 +18,9 @@ from grpc_generated.simulator_pb2 import (
     ProcessGraph,
     Consumer,
     Tender,
-    ProductionPlanAssignment,
-    DistributionStrategy,
-    SimulationParameters,
-    SimulationResults,
-    Simulation,
-    FactoryMetrics,
-    WarehouseMetrics,
-    ProductionMetrics,
-    QualityMetrics,
-    EngineeringMetrics,
-    CommercialMetrics,
-    ProcurementMetrics,
-    ProductionSchedule,
-    WorkshopPlan,
-    UnplannedRepair,
-    SpaghettiDiagram,
-    RequiredMaterial,
-    QualityInspection,
-    DeliverySchedule,
-    Certification,
     LeanImprovement,
-    WarehouseLoadChart,
-    OperationTimingChart,
-    DowntimeChart,
-    ModelMasteryChart,
-    ProjectProfitabilityChart,
+    Certification,
     # Ответы справочных данных
-    ReferenceDataResponse,
     MaterialTypesResponse,
     EquipmentTypesResponse,
     WorkplaceTypesResponse,
@@ -58,8 +37,9 @@ from grpc_generated.simulator_pb2 import (
     GetAllConsumersResponse,
     GetAllTendersResponse,
     GetAllEquipmentResopnse,
+    GetAllLeanImprovementsResponse,
+    GetAvailableLeanImprovementsResponse,
     # Запросы справочных данных
-    GetReferenceDataRequest,
     GetMaterialTypesRequest,
     GetEquipmentTypesRequest,
     GetWorkplaceTypesRequest,
@@ -67,6 +47,11 @@ from grpc_generated.simulator_pb2 import (
     GetAvailableImprovementsListRequest,
     GetAvailableCertificationsRequest,
     GetAvailableSalesStrategiesRequest,
+    GetAvailableLeanImprovementsRequest,
+    CreateLeanImprovementRequest,
+    UpdateLeanImprovementRequest,
+    DeleteLeanImprovementRequest,
+    GetAllLeanImprovementsRequest,
     # Базовые запросы
     CreateSupplierRequest,
     UpdateSupplierRequest,
@@ -102,165 +87,58 @@ from grpc_generated.simulator_pb2 import (
 )
 from grpc_generated.simulator_pb2_grpc import SimulationDatabaseManagerServicer
 
+from infrastructure.repositories import (
+    SupplierRepository,
+    WorkerRepository,
+    EquipmentRepository,
+    WorkplaceRepository,
+    ConsumerRepository,
+    TenderRepository,
+    LeanImprovementRepository,
+)
+from .proto_mappers import (
+    domain_supplier_to_proto,
+    proto_supplier_to_domain,
+    domain_worker_to_proto,
+    proto_worker_to_domain,
+    domain_equipment_to_proto,
+    proto_equipment_to_domain,
+    domain_workplace_to_proto,
+    proto_workplace_to_domain,
+    domain_consumer_to_proto,
+    proto_consumer_to_domain,
+    domain_tender_to_proto,
+    proto_tender_to_domain,
+    domain_lean_improvement_to_proto,
+    proto_lean_improvement_to_domain,
+)
+from domain import (
+    Qualification,
+    ConsumerType,
+    Specialization,
+    VehicleType,
+    PaymentForm,
+    SaleStrategest,
+    DealingWithDefects,
+    ProductImpruvement,
+)
+from domain.reference_data import (
+    Certification,
+    WorkplaceType,
+)
+
+logger = logging.getLogger(__name__)
+
 
 class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
-    def __init__(self) -> None:
-        self.suppliers: Dict[str, Supplier] = {}
-        self.workers: Dict[str, Worker] = {}
-        self.logists: Dict[str, Logist] = {}
-        self.workplaces: Dict[str, Workplace] = {}
-        self.consumers: Dict[str, Consumer] = {}
-        self.tenders: Dict[str, Tender] = {}
-        self.equipment: Dict[str, Equipment] = {}
-        self._init_test_data()
+    """Сервис управления базой данных симуляции с использованием DI паттерна."""
 
-    def _init_test_data(self):
-        """Инициализация тестовых данных."""
-        # Тестовые поставщики
-        self.suppliers["supplier_001"] = Supplier(
-            supplier_id="supplier_001",
-            name="ООО 'МеталлПром'",
-            product_name="Листовой металл",
-            delivery_period=5,
-            special_delivery_period=2,
-            reliability=0.92,
-            product_quality=0.88,
-            cost=120000,
-            special_delivery_cost=200000,
-        )
-
-        self.suppliers["supplier_002"] = Supplier(
-            supplier_id="supplier_002",
-            name="АО 'Электроника'",
-            product_name="Электронные компоненты",
-            delivery_period=7,
-            special_delivery_period=3,
-            reliability=0.85,
-            product_quality=0.90,
-            cost=95000,
-            special_delivery_cost=180000,
-        )
-
-        # Тестовые рабочие
-        self.workers["worker_001"] = Worker(
-            worker_id="worker_001",
-            name="Иванов Иван Иванович",
-            qualification=5,
-            specialty="Слесарь-сборщик",
-            salary=75000,
-        )
-
-        self.workers["worker_002"] = Worker(
-            worker_id="worker_002",
-            name="Петров Петр Петрович",
-            qualification=7,
-            specialty="Инженер-технолог",
-            salary=105000,
-        )
-
-        # Тестовые логисты
-        self.logists["logist_001"] = Logist(
-            worker_id="logist_001",
-            name="Смирнов Александр Сергеевич",
-            qualification=7,
-            specialty="Логистика",
-            salary=95000,
-            speed=70,
-            vehicle_type="Грузовой фургон",
-        )
-
-        # Тестовое оборудование
-        self.equipment["equipment_001"] = Equipment(
-            equipment_id="equipment_001",
-            name="Токарный станок ЧПУ",
-            reliability=0.95,
-            maintenance_period=30,
-            maintenance_cost=50000,
-            cost=1500000,
-            repair_cost=300000,
-            repair_time=5,
-        )
-
-        self.equipment["equipment_002"] = Equipment(
-            equipment_id="equipment_002",
-            name="Фрезерный станок",
-            reliability=0.92,
-            maintenance_period=25,
-            maintenance_cost=45000,
-            cost=1200000,
-            repair_cost=250000,
-            repair_time=4,
-        )
-
-        # Тестовые рабочие места (обновлены с новыми полями)
-        self.workplaces["workplace_001"] = Workplace(
-            workplace_id="workplace_001",
-            workplace_name="Слесарный участок №1",
-            required_speciality="Слесарь",
-            required_qualification=4,
-            required_stages=["Склад", "Подготовка"],
-            is_start_node=False,
-            is_end_node=False,
-            next_workplace_ids=["workplace_002"],
-        )
-
-        self.workplaces["workplace_002"] = Workplace(
-            workplace_id="workplace_002",
-            workplace_name="Сборочный участок",
-            required_speciality="Сборщик",
-            required_qualification=5,
-            required_stages=["workplace_001"],
-            is_start_node=True,  # Начальный узел
-            is_end_node=False,
-            next_workplace_ids=["workplace_003"],
-        )
-
-        self.workplaces["workplace_003"] = Workplace(
-            workplace_id="workplace_003",
-            workplace_name="Контроль качества",
-            required_speciality="Контролер",
-            required_qualification=4,
-            required_stages=["workplace_002"],
-            is_start_node=False,
-            is_end_node=True,  # Конечный узел
-            next_workplace_ids=[],
-        )
-
-        # Тестовые заказчики
-        self.consumers["consumer_001"] = Consumer(
-            consumer_id="consumer_001",
-            name="ООО 'Промышленные Технологии'",
-            type="Государственная",
-        )
-
-        self.consumers["consumer_002"] = Consumer(
-            consumer_id="consumer_002",
-            name="ЗАО 'Спутниковые Системы'",
-            type="Частная",
-        )
-
-        # Тестовые тендеры (обновлены с новыми полями)
-        tender_001 = Tender(
-            tender_id="tender_001",
-            cost=3500000,
-            quantity_of_products=15,
-            penalty_per_day=1000000,  # 1 млн руб/день
-            warranty_years=3,
-            payment_form="50% аванс, 50% по факту",
-        )
-        tender_001.consumer.CopyFrom(self.consumers["consumer_001"])
-        self.tenders["tender_001"] = tender_001
-
-        tender_002 = Tender(
-            tender_id="tender_002",
-            cost=5200000,
-            quantity_of_products=25,
-            penalty_per_day=1500000,
-            warranty_years=5,
-            payment_form="100% по факту выполнения",
-        )
-        tender_002.consumer.CopyFrom(self.consumers["consumer_002"])
-        self.tenders["tender_002"] = tender_002
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        """
+        Args:
+            session_factory: Фабрика для создания асинхронных сессий SQLAlchemy
+        """
+        self.session_factory = session_factory
 
     # -----------------------------------------------------------------
     #          Методы для поставщиков
@@ -269,78 +147,151 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     async def create_supplier(
         self, request: CreateSupplierRequest, context
     ) -> Supplier:
-        supplier_id = f"supplier_{uuid.uuid4().hex[:8]}"
+        """Создает нового поставщика."""
+        async with self.session_factory() as session:
+            try:
+                # Преобразуем proto запрос в доменную сущность
+                domain_supplier = proto_supplier_to_domain(
+                    Supplier(
+                        supplier_id="",  # Будет создан в репозитории
+                        name=request.name,
+                        product_name=request.product_name,
+                        material_type=request.material_type,
+                        delivery_period=request.delivery_period,
+                        special_delivery_period=request.special_delivery_period,
+                        reliability=request.reliability,
+                        product_quality=request.product_quality,
+                        cost=request.cost,
+                        special_delivery_cost=request.special_delivery_cost,
+                    )
+                )
 
-        supplier = Supplier(
-            supplier_id=supplier_id,
-            name=request.name,
-            product_name=request.product_name,
-            delivery_period=request.delivery_period,
-            special_delivery_period=request.special_delivery_period,
-            reliability=request.reliability,
-            product_quality=request.product_quality,
-            cost=request.cost,
-            special_delivery_cost=request.special_delivery_cost,
-        )
+                # Сохраняем через репозиторий
+                repo = SupplierRepository(session)
+                saved_supplier = await repo.save(domain_supplier)
 
-        self.suppliers[supplier_id] = supplier
-        return supplier
+                if saved_supplier is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании поставщика")
+                    return Supplier()
+
+                # Преобразуем в proto и возвращаем
+                return domain_supplier_to_proto(saved_supplier)
+            except Exception as e:
+                logger.error(f"Error creating supplier: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании поставщика: {str(e)}")
+                return Supplier()
 
     async def update_supplier(
         self, request: UpdateSupplierRequest, context
     ) -> Supplier:
-        if request.supplier_id not in self.suppliers:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Поставщик с ID {request.supplier_id} не найден")
-            return Supplier()
+        """Обновляет существующего поставщика."""
+        async with self.session_factory() as session:
+            try:
+                repo = SupplierRepository(session)
+                existing_supplier = await repo.get(request.supplier_id)
 
-        supplier = self.suppliers[request.supplier_id]
+                if existing_supplier is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Поставщик с ID {request.supplier_id} не найден"
+                    )
+                    return Supplier()
 
-        # Обновляем поля
-        if request.name:
-            supplier.name = request.name
-        if request.product_name:
-            supplier.product_name = request.product_name
-        if request.delivery_period:
-            supplier.delivery_period = request.delivery_period
-        if request.special_delivery_period:
-            supplier.special_delivery_period = request.special_delivery_period
-        if request.reliability:
-            supplier.reliability = request.reliability
-        if request.product_quality:
-            supplier.product_quality = request.product_quality
-        if request.cost:
-            supplier.cost = request.cost
-        if request.special_delivery_cost:
-            supplier.special_delivery_cost = request.special_delivery_cost
+                # Преобразуем существующего поставщика в proto для обновления
+                existing_proto = domain_supplier_to_proto(existing_supplier)
 
-        return supplier
+                # Обновляем поля в proto объекте
+                if request.name:
+                    existing_proto.name = request.name
+                if request.product_name:
+                    existing_proto.product_name = request.product_name
+                if request.material_type:
+                    existing_proto.material_type = request.material_type
+                if request.delivery_period:
+                    existing_proto.delivery_period = request.delivery_period
+                if request.special_delivery_period:
+                    existing_proto.special_delivery_period = (
+                        request.special_delivery_period
+                    )
+                if request.reliability:
+                    existing_proto.reliability = request.reliability
+                if request.product_quality:
+                    existing_proto.product_quality = request.product_quality
+                if request.cost:
+                    existing_proto.cost = request.cost
+                if request.special_delivery_cost:
+                    existing_proto.special_delivery_cost = request.special_delivery_cost
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_supplier_to_domain(existing_proto)
+                updated_supplier = await repo.save(updated_domain)
+
+                if updated_supplier is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении поставщика")
+                    return Supplier()
+
+                return domain_supplier_to_proto(updated_supplier)
+            except Exception as e:
+                logger.error(f"Error updating supplier: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении поставщика: {str(e)}")
+                return Supplier()
 
     async def delete_supplier(
         self, request: DeleteSupplierRequest, context
     ) -> SuccessResponse:
-        if request.supplier_id not in self.suppliers:
-            return SuccessResponse(
-                success=False,
-                message=f"Поставщик с ID {request.supplier_id} не найден",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет поставщика."""
+        async with self.session_factory() as session:
+            try:
+                repo = SupplierRepository(session)
+                deleted_supplier = await repo.delete(request.supplier_id)
 
-        del self.suppliers[request.supplier_id]
+                if deleted_supplier is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Поставщик с ID {request.supplier_id} не найден",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Поставщик {request.supplier_id} успешно удален",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Поставщик {request.supplier_id} успешно удален",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting supplier: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении поставщика: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_suppliers(
         self, request: GetAllSuppliersRequest, context
     ) -> GetAllSuppliersResponse:
-        return GetAllSuppliersResponse(
-            suppliers=list(self.suppliers.values()),
-            total_count=len(self.suppliers),
-        )
+        """Получает всех поставщиков."""
+        async with self.session_factory() as session:
+            try:
+                repo = SupplierRepository(session)
+                domain_suppliers = await repo.get_all()
+
+                proto_suppliers = [
+                    domain_supplier_to_proto(s) for s in domain_suppliers
+                ]
+
+                return GetAllSuppliersResponse(
+                    suppliers=proto_suppliers,
+                    total_count=len(proto_suppliers),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all suppliers: {e}", exc_info=True)
+                return GetAllSuppliersResponse(
+                    suppliers=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для складов
@@ -353,8 +304,8 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
             inventory_worker=Worker(
                 worker_id="worker_warehouse_001",
                 name="Сидоров Сидор Сидорович",
-                qualification=3,
-                specialty="Кладовщик",
+                qualification=Qualification.III.value,  # int в proto
+                specialty=Specialization.WAREHOUSE_KEEPER.value,  # string в proto
                 salary=45000,
             ),
             size=800,
@@ -372,134 +323,395 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     # -----------------------------------------------------------------
 
     async def create_worker(self, request: CreateWorkerRequest, context) -> Worker:
-        worker_id = f"worker_{uuid.uuid4().hex[:8]}"
+        """Создает нового работника."""
+        async with self.session_factory() as session:
+            try:
+                # Преобразуем proto запрос в доменную сущность
+                domain_worker = proto_worker_to_domain(
+                    Worker(
+                        worker_id="",
+                        name=request.name,
+                        qualification=request.qualification,
+                        specialty=request.specialty,
+                        salary=request.salary,
+                    )
+                )
 
-        worker = Worker(
-            worker_id=worker_id,
-            name=request.name,
-            qualification=request.qualification,
-            specialty=request.specialty,
-            salary=request.salary,
-        )
+                repo = WorkerRepository(session)
+                saved_worker = await repo.save(domain_worker)
 
-        self.workers[worker_id] = worker
-        return worker
+                if saved_worker is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании работника")
+                    return Worker()
+
+                return domain_worker_to_proto(saved_worker)
+            except Exception as e:
+                logger.error(f"Error creating worker: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании работника: {str(e)}")
+                return Worker()
 
     async def update_worker(self, request: UpdateWorkerRequest, context) -> Worker:
-        if request.worker_id not in self.workers:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Рабочий с ID {request.worker_id} не найден")
-            return Worker()
+        """Обновляет существующего работника."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkerRepository(session)
+                existing_worker = await repo.get(request.worker_id)
 
-        worker = self.workers[request.worker_id]
+                if existing_worker is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Рабочий с ID {request.worker_id} не найден")
+                    return Worker()
 
-        # Обновляем поля
-        if request.name:
-            worker.name = request.name
-        if request.qualification:
-            worker.qualification = request.qualification
-        if request.specialty:
-            worker.specialty = request.specialty
-        if request.salary:
-            worker.salary = request.salary
+                # Преобразуем существующего работника в proto для обновления
+                existing_proto = domain_worker_to_proto(existing_worker)
 
-        return worker
+                # Обновляем поля в proto объекте
+                if request.name:
+                    existing_proto.name = request.name
+                if request.qualification:
+                    existing_proto.qualification = request.qualification
+                if request.specialty:
+                    existing_proto.specialty = request.specialty
+                if request.salary:
+                    existing_proto.salary = request.salary
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_worker_to_domain(existing_proto)
+                updated_worker = await repo.save(updated_domain)
+
+                if updated_worker is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении работника")
+                    return Worker()
+
+                return domain_worker_to_proto(updated_worker)
+            except Exception as e:
+                logger.error(f"Error updating worker: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении работника: {str(e)}")
+                return Worker()
 
     async def delete_worker(
         self, request: DeleteWorkerRequest, context
     ) -> SuccessResponse:
-        if request.worker_id not in self.workers:
-            return SuccessResponse(
-                success=False,
-                message=f"Рабочий с ID {request.worker_id} не найден",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет работника."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkerRepository(session)
+                deleted_worker = await repo.delete(request.worker_id)
 
-        del self.workers[request.worker_id]
+                if deleted_worker is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Рабочий с ID {request.worker_id} не найден",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Рабочий {request.worker_id} успешно удален",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Рабочий {request.worker_id} успешно удален",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting worker: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении работника: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_workers(
         self, request: GetAllWorkersRequest, context
     ) -> GetAllWorkersResponse:
-        return GetAllWorkersResponse(
-            workers=list(self.workers.values()),
-            total_count=len(self.workers),
-        )
+        """Получает всех работников (исключая логистов)."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkerRepository(session)
+                # Фильтруем только работников с type="worker"
+                domain_workers = await repo.get_all(worker_type="worker")
+
+                proto_workers = [domain_worker_to_proto(w) for w in domain_workers]
+
+                return GetAllWorkersResponse(
+                    workers=proto_workers,
+                    total_count=len(proto_workers),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all workers: {e}", exc_info=True)
+                return GetAllWorkersResponse(
+                    workers=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для логистов
     # -----------------------------------------------------------------
+    # Примечание: Logist наследуется от Worker, поэтому используем WorkerRepository
+    # и преобразуем Worker в Logist при необходимости
 
     async def create_logist(self, request: CreateLogistRequest, context) -> Logist:
-        logist_id = f"logist_{uuid.uuid4().hex[:8]}"
+        """Создает нового логиста (используется как Worker)."""
+        # Логист хранится как Worker, но с дополнительными полями
+        # Для упрощения используем Worker, но можно расширить при необходимости
+        async with self.session_factory() as session:
+            try:
+                from domain import Logist as DomainLogist
 
-        logist = Logist(
-            worker_id=logist_id,
-            name=request.name,
-            qualification=request.qualification,
-            specialty=request.specialty,
-            salary=request.salary,
-            speed=request.speed,
-            vehicle_type=request.vehicle_type,
-        )
+                domain_logist = proto_worker_to_domain(
+                    Worker(
+                        worker_id="",
+                        name=request.name,
+                        qualification=request.qualification,
+                        specialty=request.specialty,
+                        salary=request.salary,
+                    )
+                )
+                # Валидация speed: максимальное значение для int32 в PostgreSQL
+                MAX_SPEED = 2147483647  # Максимальное значение int32
+                speed = request.speed
+                if speed > MAX_SPEED:
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details(
+                        f"Значение speed ({speed}) превышает максимально допустимое ({MAX_SPEED})"
+                    )
+                    return Logist()
 
-        self.logists[logist_id] = logist
-        return logist
+                # vehicle_type теперь строка в домене
+                vehicle_type_str = request.vehicle_type or ""
+
+                # Убеждаемся, что qualification - int
+                qualification_int = (
+                    domain_logist.qualification.value
+                    if hasattr(domain_logist.qualification, "value")
+                    else domain_logist.qualification
+                )
+
+                logist = DomainLogist(
+                    worker_id=domain_logist.worker_id,
+                    name=domain_logist.name,
+                    qualification=qualification_int,  # int в домене
+                    specialty=domain_logist.specialty,  # в домене это specialty, не specialization
+                    salary=domain_logist.salary,
+                    speed=speed,
+                    vehicle_type=vehicle_type_str,  # строка в домене
+                )
+
+                logger.debug(
+                    f"Creating logist: name={logist.name}, speed={logist.speed}, "
+                    f"vehicle_type={logist.vehicle_type}, type={type(logist).__name__}"
+                )
+
+                repo = WorkerRepository(session)
+                # Сохраняем как Worker (логист наследуется от Worker)
+                saved_entity = await repo.save(logist)
+
+                logger.debug(
+                    f"Saved logist entity: type={type(saved_entity).__name__}, "
+                    f"worker_id={saved_entity.worker_id if saved_entity else None}"
+                )
+
+                if saved_entity is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании логиста")
+                    return Logist()
+
+                # Проверяем, что логист действительно сохранился в БД
+                # Используем новую сессию для проверки (имитируем следующий запрос)
+                if saved_entity.worker_id:
+                    verify_worker = await repo.get(saved_entity.worker_id)
+                    if verify_worker is None:
+                        logger.warning(
+                            f"Logist {saved_entity.worker_id} was saved but not found immediately after"
+                        )
+
+                # Репозиторий должен вернуть Logist, если type="logist" в БД
+                # Если вернулся Worker, преобразуем в Logist
+                if not isinstance(saved_entity, DomainLogist):
+                    # Преобразуем Worker в Logist, используя данные из оригинального logist
+                    # Убеждаемся, что qualification - int
+                    qualification_int = (
+                        saved_entity.qualification.value
+                        if hasattr(saved_entity.qualification, "value")
+                        else saved_entity.qualification
+                    )
+                    saved_logist = DomainLogist(
+                        worker_id=saved_entity.worker_id,
+                        name=saved_entity.name,
+                        qualification=qualification_int,  # int в домене
+                        specialty=saved_entity.specialty,
+                        salary=saved_entity.salary,
+                        speed=logist.speed,
+                        vehicle_type=logist.vehicle_type,
+                    )
+                else:
+                    saved_logist = saved_entity
+
+                # Преобразуем в proto
+                from .proto_mappers import domain_logist_to_proto
+
+                return domain_logist_to_proto(saved_logist)
+            except Exception as e:
+                logger.error(f"Error creating logist: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании логиста: {str(e)}")
+                return Logist()
 
     async def update_logist(self, request: UpdateLogistRequest, context) -> Logist:
-        if request.worker_id not in self.logists:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Логист с ID {request.worker_id} не найден")
-            return Logist()
+        """Обновляет логиста."""
+        async with self.session_factory() as session:
+            try:
+                from domain import Logist as DomainLogist
 
-        logist = self.logists[request.worker_id]
+                repo = WorkerRepository(session)
+                # Получаем через репозиторий
+                existing_worker = await repo.get(request.worker_id)
 
-        # Обновляем поля
-        if request.name:
-            logist.name = request.name
-        if request.qualification:
-            logist.qualification = request.qualification
-        if request.specialty:
-            logist.specialty = request.specialty
-        if request.salary:
-            logist.salary = request.salary
-        if request.speed:
-            logist.speed = request.speed
-        if request.vehicle_type:
-            logist.vehicle_type = request.vehicle_type
+                if existing_worker is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Логист с ID {request.worker_id} не найден")
+                    return Logist()
 
-        return logist
+                # Проверяем, что это действительно логист
+                if not isinstance(existing_worker, DomainLogist):
+                    context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                    context.set_details(
+                        f"Работник с ID {request.worker_id} не является логистом"
+                    )
+                    return Logist()
+
+                # Используем существующую доменную сущность
+                logist = existing_worker
+
+                # Обновляем поля
+                if request.name:
+                    logist.name = request.name
+                if request.qualification:
+                    # qualification теперь int в домене, не enum
+                    logist.qualification = request.qualification
+                if request.specialty:
+                    logist.specialty = request.specialty  # в домене это specialty
+                if request.salary:
+                    logist.salary = request.salary
+                if request.speed is not None:
+                    # Валидация speed: максимальное значение для int32 в PostgreSQL
+                    MAX_SPEED = 2147483647  # Максимальное значение int32
+                    if request.speed > MAX_SPEED:
+                        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                        context.set_details(
+                            f"Значение speed ({request.speed}) превышает максимально допустимое ({MAX_SPEED})"
+                        )
+                        return Logist()
+                    logist.speed = request.speed
+                if request.vehicle_type:
+                    # vehicle_type теперь строка в домене
+                    logist.vehicle_type = request.vehicle_type
+
+                # Сохраняем изменения
+                updated_entity = await repo.save(logist)
+
+                if updated_entity is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении логиста")
+                    return Logist()
+
+                # Репозиторий должен вернуть Logist, если type="logist" в БД
+                # Если вернулся Worker, преобразуем в Logist
+                if not isinstance(updated_entity, DomainLogist):
+                    # Убеждаемся, что qualification - int
+                    qualification_int = (
+                        updated_entity.qualification.value
+                        if hasattr(updated_entity.qualification, "value")
+                        else updated_entity.qualification
+                    )
+                    updated_logist = DomainLogist(
+                        worker_id=updated_entity.worker_id,
+                        name=updated_entity.name,
+                        qualification=qualification_int,  # int в домене
+                        specialty=updated_entity.specialty,  # в домене это specialty
+                        salary=updated_entity.salary,
+                        speed=logist.speed,
+                        vehicle_type=logist.vehicle_type,  # строка в домене
+                    )
+                else:
+                    # Убеждаемся, что qualification - int (может прийти как enum из репозитория)
+                    if hasattr(updated_entity.qualification, "value"):
+                        updated_entity.qualification = (
+                            updated_entity.qualification.value
+                        )
+                    updated_logist = updated_entity
+
+                from .proto_mappers import domain_logist_to_proto
+
+                return domain_logist_to_proto(updated_logist)
+            except Exception as e:
+                logger.error(f"Error updating logist: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении логиста: {str(e)}")
+                return Logist()
 
     async def delete_logist(
         self, request: DeleteLogistRequest, context
     ) -> SuccessResponse:
-        if request.worker_id not in self.logists:
-            return SuccessResponse(
-                success=False,
-                message=f"Логист с ID {request.worker_id} не найден",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет логиста."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkerRepository(session)
+                deleted_worker = await repo.delete(request.worker_id)
 
-        del self.logists[request.worker_id]
+                if deleted_worker is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Логист с ID {request.worker_id} не найден",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Логист {request.worker_id} успешно удален",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Логист {request.worker_id} успешно удален",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting logist: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении логиста: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_logists(
         self, request: GetAllLogistsRequest, context
     ) -> GetAllLogistsResponse:
-        return GetAllLogistsResponse(
-            logists=list(self.logists.values()),
-            total_count=len(self.logists),
-        )
+        """Получает всех логистов."""
+        async with self.session_factory() as session:
+            try:
+                from .proto_mappers import domain_logist_to_proto
+
+                # Используем репозиторий для получения логистов
+                repo = WorkerRepository(session)
+                domain_logists = await repo.get_all(worker_type="logist")
+
+                logger.debug(
+                    f"Found {len(domain_logists)} logists in database using repository"
+                )
+
+                # Преобразуем в proto сообщения
+                proto_logists = [
+                    domain_logist_to_proto(logist) for logist in domain_logists
+                ]
+
+                logger.debug(f"Returning {len(proto_logists)} logists")
+                return GetAllLogistsResponse(
+                    logists=proto_logists,
+                    total_count=len(proto_logists),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all logists: {e}", exc_info=True)
+                return GetAllLogistsResponse(
+                    logists=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для рабочих мест
@@ -508,86 +720,143 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     async def create_workplace(
         self, request: CreateWorkplaceRequest, context
     ) -> Workplace:
-        workplace_id = f"workplace_{uuid.uuid4().hex[:8]}"
+        """Создает новое рабочее место."""
+        async with self.session_factory() as session:
+            try:
+                # CreateWorkplaceRequest не содержит worker_id и equipment_id
+                # Рабочее место создается без привязки к worker/equipment
+                # Эти поля устанавливаются только во время симуляции
 
-        # Получаем работника если указан
-        worker = None
-        if request.worker_id and request.worker_id in self.workers:
-            worker = self.workers[request.worker_id]
+                # Создаем временный proto объект из request для использования маппера
+                workplace_proto = Workplace(
+                    workplace_id="",
+                    workplace_name=request.workplace_name,
+                    required_speciality=request.required_speciality,
+                    required_qualification=request.required_qualification,
+                    required_equipment=request.required_equipment or "",
+                    required_stages=request.required_stages,
+                )
 
-        workplace = Workplace(
-            workplace_id=workplace_id,
-            workplace_name=request.workplace_name,
-            required_speciality=request.required_speciality,
-            required_qualification=request.required_qualification,
-            required_stages=list(request.required_stages),
-            is_start_node=False,
-            is_end_node=False,
-            next_workplace_ids=[],
-        )
-        if worker:
-            workplace.worker.CopyFrom(worker)
-        # equipment остается пустым (по умолчанию)
+                # Преобразуем proto в доменную сущность через маппер
+                domain_workplace = proto_workplace_to_domain(workplace_proto)
 
-        self.workplaces[workplace_id] = workplace
-        return workplace
+                repo = WorkplaceRepository(session)
+                saved_workplace = await repo.save(domain_workplace)
+
+                if saved_workplace is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании рабочего места")
+                    return Workplace()
+
+                return domain_workplace_to_proto(saved_workplace)
+            except Exception as e:
+                logger.error(f"Error creating workplace: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании рабочего места: {str(e)}")
+                return Workplace()
 
     async def update_workplace(
         self, request: UpdateWorkplaceRequest, context
     ) -> Workplace:
-        if request.workplace_id not in self.workplaces:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Рабочее место с ID {request.workplace_id} не найдено")
-            return Workplace()
+        """Обновляет рабочее место."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkplaceRepository(session)
+                existing_workplace = await repo.get(request.workplace_id)
 
-        workplace = self.workplaces[request.workplace_id]
+                if existing_workplace is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Рабочее место с ID {request.workplace_id} не найдено"
+                    )
+                    return Workplace()
 
-        # Обновляем поля
-        if request.workplace_name:
-            workplace.workplace_name = request.workplace_name
-        if request.required_speciality:
-            workplace.required_speciality = request.required_speciality
-        if request.required_qualification:
-            workplace.required_qualification = request.required_qualification
+                # Преобразуем существующее рабочее место в proto для обновления
+                existing_proto = domain_workplace_to_proto(existing_workplace)
 
-        # Обновляем работника если указан
-        if request.worker_id:
-            if request.worker_id in self.workers:
-                workplace.worker.CopyFrom(self.workers[request.worker_id])
-            else:
-                workplace.worker.CopyFrom(Worker())
+                # Обновляем поля в proto объекте
+                if request.workplace_name:
+                    existing_proto.workplace_name = request.workplace_name
+                if request.required_speciality:
+                    existing_proto.required_speciality = request.required_speciality
+                if request.required_qualification:
+                    existing_proto.required_qualification = (
+                        request.required_qualification
+                    )
+                if request.required_equipment:
+                    existing_proto.required_equipment = request.required_equipment
+                if request.required_stages:
+                    existing_proto.required_stages[:] = request.required_stages
 
-        if request.required_stages:
-            workplace.required_stages.clear()
-            workplace.required_stages.extend(request.required_stages)
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_workplace_to_domain(existing_proto)
 
-        return workplace
+                updated_workplace = await repo.save(updated_domain)
+
+                if updated_workplace is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении рабочего места")
+                    return Workplace()
+
+                return domain_workplace_to_proto(updated_workplace)
+            except Exception as e:
+                logger.error(f"Error updating workplace: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении рабочего места: {str(e)}")
+                return Workplace()
 
     async def delete_workplace(
         self, request: DeleteWorkplaceRequest, context
     ) -> SuccessResponse:
-        if request.workplace_id not in self.workplaces:
-            return SuccessResponse(
-                success=False,
-                message=f"Рабочее место с ID {request.workplace_id} не найдено",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет рабочее место."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkplaceRepository(session)
+                deleted_workplace = await repo.delete(request.workplace_id)
 
-        del self.workplaces[request.workplace_id]
+                if deleted_workplace is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Рабочее место с ID {request.workplace_id} не найдено",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Рабочее место {request.workplace_id} успешно удалено",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Рабочее место {request.workplace_id} успешно удалено",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting workplace: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении рабочего места: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_workplaces(
         self, request: GetAllWorkplacesRequest, context
     ) -> GetAllWorkplacesResponse:
-        return GetAllWorkplacesResponse(
-            workplaces=list(self.workplaces.values()),
-            total_count=len(self.workplaces),
-        )
+        """Получает все рабочие места."""
+        async with self.session_factory() as session:
+            try:
+                repo = WorkplaceRepository(session)
+                domain_workplaces = await repo.get_all()
+
+                proto_workplaces = [
+                    domain_workplace_to_proto(w) for w in domain_workplaces
+                ]
+
+                return GetAllWorkplacesResponse(
+                    workplaces=proto_workplaces,
+                    total_count=len(proto_workplaces),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all workplaces: {e}", exc_info=True)
+                return GetAllWorkplacesResponse(
+                    workplaces=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для карты процесса
@@ -596,24 +865,35 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     async def get_process_graph(
         self, request: GetProcessGraphRequest, context
     ) -> ProcessGraph:
-        # Создаем маршруты между рабочими местами
-        routes = []
-        for workplace_id, workplace in self.workplaces.items():
-            for next_workplace_id in workplace.next_workplace_ids:
-                if next_workplace_id in self.workplaces:
-                    routes.append(
-                        Route(
-                            length=10,  # Стандартная длина
-                            from_workplace=workplace_id,
-                            to_workplace=next_workplace_id,
-                        )
-                    )
+        """Получает граф процесса из рабочих мест в БД."""
+        async with self.session_factory() as session:
+            try:
+                # Получаем все рабочие места из БД
+                repo = WorkplaceRepository(session)
+                domain_workplaces = await repo.get_all()
 
-        return ProcessGraph(
-            process_graph_id=request.process_graph_id,
-            workplaces=list(self.workplaces.values()),
-            routes=routes,
-        )
+                # Преобразуем в proto
+                proto_workplaces = [
+                    domain_workplace_to_proto(w) for w in domain_workplaces
+                ]
+
+                # Создаем пустые маршруты (можно расширить логику позже)
+                routes = []
+
+                return ProcessGraph(
+                    process_graph_id=request.process_graph_id,
+                    workplaces=proto_workplaces,
+                    routes=routes,
+                )
+            except Exception as e:
+                logger.error(f"Error getting process graph: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении графа процесса: {str(e)}")
+                return ProcessGraph(
+                    process_graph_id=request.process_graph_id,
+                    workplaces=[],
+                    routes=[],
+                )
 
     # -----------------------------------------------------------------
     #          Методы для заказчиков
@@ -622,143 +902,284 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     async def create_consumer(
         self, request: CreateConsumerRequest, context
     ) -> Consumer:
-        consumer_id = f"consumer_{uuid.uuid4().hex[:8]}"
+        """Создает нового заказчика."""
+        async with self.session_factory() as session:
+            try:
+                domain_consumer = proto_consumer_to_domain(
+                    Consumer(
+                        consumer_id="",
+                        name=request.name,
+                        type=request.type,
+                    )
+                )
 
-        consumer = Consumer(
-            consumer_id=consumer_id,
-            name=request.name,
-            type=request.type,
-        )
+                repo = ConsumerRepository(session)
+                saved_consumer = await repo.save(domain_consumer)
 
-        self.consumers[consumer_id] = consumer
-        return consumer
+                if saved_consumer is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании заказчика")
+                    return Consumer()
+
+                return domain_consumer_to_proto(saved_consumer)
+            except Exception as e:
+                logger.error(f"Error creating consumer: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании заказчика: {str(e)}")
+                return Consumer()
 
     async def update_consumer(
         self, request: UpdateConsumerRequest, context
     ) -> Consumer:
-        if request.consumer_id not in self.consumers:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Заказчик с ID {request.consumer_id} не найден")
-            return Consumer()
+        """Обновляет заказчика."""
+        async with self.session_factory() as session:
+            try:
+                repo = ConsumerRepository(session)
+                existing_consumer = await repo.get(request.consumer_id)
 
-        consumer = self.consumers[request.consumer_id]
+                if existing_consumer is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Заказчик с ID {request.consumer_id} не найден"
+                    )
+                    return Consumer()
 
-        # Обновляем поля
-        if request.name:
-            consumer.name = request.name
-        if request.type:
-            consumer.type = request.type
+                # Преобразуем существующего заказчика в proto для обновления
+                existing_proto = domain_consumer_to_proto(existing_consumer)
 
-        return consumer
+                # Обновляем поля в proto объекте
+                if request.name:
+                    existing_proto.name = request.name
+                if request.type:
+                    existing_proto.type = request.type
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_consumer_to_domain(existing_proto)
+                updated_consumer = await repo.save(updated_domain)
+
+                if updated_consumer is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении заказчика")
+                    return Consumer()
+
+                return domain_consumer_to_proto(updated_consumer)
+            except Exception as e:
+                logger.error(f"Error updating consumer: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении заказчика: {str(e)}")
+                return Consumer()
 
     async def delete_consumer(
         self, request: DeleteConsumerRequest, context
     ) -> SuccessResponse:
-        if request.consumer_id not in self.consumers:
-            return SuccessResponse(
-                success=False,
-                message=f"Заказчик с ID {request.consumer_id} не найден",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет заказчика."""
+        async with self.session_factory() as session:
+            try:
+                repo = ConsumerRepository(session)
+                deleted_consumer = await repo.delete(request.consumer_id)
 
-        del self.consumers[request.consumer_id]
+                if deleted_consumer is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Заказчик с ID {request.consumer_id} не найден",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Заказчик {request.consumer_id} успешно удален",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Заказчик {request.consumer_id} успешно удален",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting consumer: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении заказчика: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_consumers(
         self, request: GetAllConsumersRequest, context
     ) -> GetAllConsumersResponse:
-        return GetAllConsumersResponse(
-            consumers=list(self.consumers.values()),
-            total_count=len(self.consumers),
-        )
+        """Получает всех заказчиков."""
+        async with self.session_factory() as session:
+            try:
+                repo = ConsumerRepository(session)
+                domain_consumers = await repo.get_all()
+
+                proto_consumers = [
+                    domain_consumer_to_proto(c) for c in domain_consumers
+                ]
+
+                return GetAllConsumersResponse(
+                    consumers=proto_consumers,
+                    total_count=len(proto_consumers),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all consumers: {e}", exc_info=True)
+                return GetAllConsumersResponse(
+                    consumers=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для тендеров
     # -----------------------------------------------------------------
 
     async def create_tender(self, request: CreateTenderRequest, context) -> Tender:
-        tender_id = f"tender_{uuid.uuid4().hex[:8]}"
+        """Создает новый тендер."""
+        async with self.session_factory() as session:
+            try:
+                # Получаем заказчика
+                consumer_repo = ConsumerRepository(session)
+                consumer = await consumer_repo.get(request.consumer_id)
 
-        # Получаем заказчика
-        consumer = None
-        if request.consumer_id in self.consumers:
-            consumer = self.consumers[request.consumer_id]
-        else:
-            # Создаем временного заказчика
-            consumer = Consumer(
-                consumer_id=request.consumer_id,
-                name="Временный заказчик",
-                type="Коммерческая",
-            )
+                if consumer is None:
+                    # Создаем временного заказчика, если не найден
+                    consumer = await consumer_repo.save(
+                        proto_consumer_to_domain(
+                            Consumer(
+                                consumer_id=request.consumer_id,
+                                name="Временный заказчик",
+                                type=ConsumerType.NOT_GOVERMANT.value,  # string в proto
+                            )
+                        )
+                    )
 
-        tender = Tender(
-            tender_id=tender_id,
-            cost=request.cost,
-            quantity_of_products=request.quantity_of_products,
-            penalty_per_day=request.penalty_per_day if request.penalty_per_day else 0,
-            warranty_years=request.warranty_years if request.warranty_years else 1,
-            payment_form=request.payment_form if request.payment_form else "",
-        )
-        tender.consumer.CopyFrom(consumer)
+                # Создаем временный proto объект из request для использования маппера
+                tender_proto = Tender(
+                    tender_id="",
+                    consumer=domain_consumer_to_proto(consumer),
+                    cost=request.cost,
+                    quantity_of_products=request.quantity_of_products,
+                    penalty_per_day=(
+                        request.penalty_per_day if request.penalty_per_day else 0
+                    ),
+                    warranty_years=(
+                        request.warranty_years if request.warranty_years else 0
+                    ),
+                    payment_form=request.payment_form if request.payment_form else "",
+                )
 
-        self.tenders[tender_id] = tender
-        return tender
+                # Преобразуем proto в доменную сущность через маппер
+                domain_tender = proto_tender_to_domain(tender_proto)
+
+                repo = TenderRepository(session)
+                saved_tender = await repo.save(domain_tender)
+
+                if saved_tender is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании тендера")
+                    return Tender()
+
+                return domain_tender_to_proto(saved_tender)
+            except Exception as e:
+                logger.error(f"Error creating tender: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании тендера: {str(e)}")
+                return Tender()
 
     async def update_tender(self, request: UpdateTenderRequest, context) -> Tender:
-        if request.tender_id not in self.tenders:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Тендер с ID {request.tender_id} не найден")
-            return Tender()
+        """Обновляет тендер."""
+        async with self.session_factory() as session:
+            try:
+                repo = TenderRepository(session)
+                existing_tender = await repo.get(request.tender_id)
 
-        tender = self.tenders[request.tender_id]
+                if existing_tender is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Тендер с ID {request.tender_id} не найден")
+                    return Tender()
 
-        # Обновляем поля
-        if request.consumer_id:
-            if request.consumer_id in self.consumers:
-                tender.consumer.CopyFrom(self.consumers[request.consumer_id])
-        if request.cost:
-            tender.cost = request.cost
-        if request.quantity_of_products:
-            tender.quantity_of_products = request.quantity_of_products
-        if request.penalty_per_day:
-            tender.penalty_per_day = request.penalty_per_day
-        if request.warranty_years:
-            tender.warranty_years = request.warranty_years
-        if request.payment_form:
-            tender.payment_form = request.payment_form
+                # Преобразуем существующий тендер в proto для обновления
+                existing_proto = domain_tender_to_proto(existing_tender)
 
-        return tender
+                # Обновляем поля в proto объекте
+                if request.consumer_id:
+                    consumer_repo = ConsumerRepository(session)
+                    consumer = await consumer_repo.get(request.consumer_id)
+                    if consumer:
+                        existing_proto.consumer.CopyFrom(
+                            domain_consumer_to_proto(consumer)
+                        )
+
+                if request.cost:
+                    existing_proto.cost = request.cost
+                if request.quantity_of_products:
+                    existing_proto.quantity_of_products = request.quantity_of_products
+                if request.penalty_per_day:
+                    existing_proto.penalty_per_day = request.penalty_per_day
+                if request.warranty_years:
+                    existing_proto.warranty_years = request.warranty_years
+                if request.payment_form:
+                    existing_proto.payment_form = request.payment_form
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_tender_to_domain(existing_proto)
+                updated_tender = await repo.save(updated_domain)
+
+                if updated_tender is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении тендера")
+                    return Tender()
+
+                return domain_tender_to_proto(updated_tender)
+            except Exception as e:
+                logger.error(f"Error updating tender: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении тендера: {str(e)}")
+                return Tender()
 
     async def delete_tender(
         self, request: DeleteTenderRequest, context
     ) -> SuccessResponse:
-        if request.tender_id not in self.tenders:
-            return SuccessResponse(
-                success=False,
-                message=f"Тендер с ID {request.tender_id} не найден",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет тендер."""
+        async with self.session_factory() as session:
+            try:
+                repo = TenderRepository(session)
+                deleted_tender = await repo.delete(request.tender_id)
 
-        del self.tenders[request.tender_id]
+                if deleted_tender is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Тендер с ID {request.tender_id} не найден",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Тендер {request.tender_id} успешно удален",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Тендер {request.tender_id} успешно удален",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting tender: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении тендера: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_tenders(
         self, request: GetAllTendersRequest, context
     ) -> GetAllTendersResponse:
-        return GetAllTendersResponse(
-            tenders=list(self.tenders.values()),
-            total_count=len(self.tenders),
-        )
+        """Получает все тендеры."""
+        async with self.session_factory() as session:
+            try:
+                repo = TenderRepository(session)
+                domain_tenders = await repo.get_all()
+
+                proto_tenders = [domain_tender_to_proto(t) for t in domain_tenders]
+
+                return GetAllTendersResponse(
+                    tenders=proto_tenders,
+                    total_count=len(proto_tenders),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all tenders: {e}", exc_info=True)
+                return GetAllTendersResponse(
+                    tenders=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
     #          Методы для оборудования
@@ -767,510 +1188,206 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     async def create_equipment(
         self, request: CreateEquipmentRequest, context
     ) -> Equipment:
-        equipment_id = f"equipment_{uuid.uuid4().hex[:8]}"
+        """Создает новое оборудование."""
+        async with self.session_factory() as session:
+            try:
+                domain_equipment = proto_equipment_to_domain(
+                    Equipment(
+                        equipment_id="",
+                        name=request.name,
+                        equipment_type=request.equipment_type,
+                        reliability=request.reliability,
+                        maintenance_period=(
+                            request.maintenance_period
+                            if request.maintenance_period
+                            else None
+                        ),
+                        maintenance_cost=request.maintenance_cost,
+                        cost=request.cost,
+                        repair_cost=request.repair_cost,
+                        repair_time=request.repair_time,
+                    )
+                )
 
-        equipment = Equipment(
-            equipment_id=equipment_id,
-            name=request.name,
-            reliability=request.reliability,
-            maintenance_period=request.maintenance_period,
-            maintenance_cost=request.maintenance_cost,
-            cost=request.cost,
-            repair_cost=request.repair_cost,
-            repair_time=request.repair_time,
-        )
+                repo = EquipmentRepository(session)
+                saved_equipment = await repo.save(domain_equipment)
 
-        self.equipment[equipment_id] = equipment
-        return equipment
+                if saved_equipment is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании оборудования")
+                    return Equipment()
+
+                return domain_equipment_to_proto(saved_equipment)
+            except Exception as e:
+                logger.error(f"Error creating equipment: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании оборудования: {str(e)}")
+                return Equipment()
 
     async def update_equipment(
         self, request: UpdateEquipmentRequest, context
     ) -> Equipment:
-        if request.equipment_id not in self.equipment:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Оборудование с ID {request.equipment_id} не найдено")
-            return Equipment()
+        """Обновляет оборудование."""
+        async with self.session_factory() as session:
+            try:
+                repo = EquipmentRepository(session)
+                existing_equipment = await repo.get(request.equipment_id)
 
-        equipment = self.equipment[request.equipment_id]
+                if existing_equipment is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Оборудование с ID {request.equipment_id} не найдено"
+                    )
+                    return Equipment()
 
-        # Обновляем поля
-        if request.name:
-            equipment.name = request.name
-        if request.reliability:
-            equipment.reliability = request.reliability
-        if request.maintenance_period:
-            equipment.maintenance_period = request.maintenance_period
-        if request.maintenance_cost:
-            equipment.maintenance_cost = request.maintenance_cost
-        if request.cost:
-            equipment.cost = request.cost
-        if request.repair_cost:
-            equipment.repair_cost = request.repair_cost
-        if request.repair_time:
-            equipment.repair_time = request.repair_time
+                # Преобразуем существующее оборудование в proto для обновления
+                existing_proto = domain_equipment_to_proto(existing_equipment)
 
-        return equipment
+                # Обновляем поля в proto объекте
+                if request.name:
+                    existing_proto.name = request.name
+                if request.equipment_type:
+                    existing_proto.equipment_type = request.equipment_type
+                if request.reliability:
+                    existing_proto.reliability = request.reliability
+                if request.maintenance_period:
+                    existing_proto.maintenance_period = request.maintenance_period
+                if request.maintenance_cost:
+                    existing_proto.maintenance_cost = request.maintenance_cost
+                if request.cost:
+                    existing_proto.cost = request.cost
+                if request.repair_cost:
+                    existing_proto.repair_cost = request.repair_cost
+                if request.repair_time:
+                    existing_proto.repair_time = request.repair_time
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_equipment_to_domain(existing_proto)
+                updated_equipment = await repo.save(updated_domain)
+
+                if updated_equipment is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении оборудования")
+                    return Equipment()
+
+                return domain_equipment_to_proto(updated_equipment)
+            except Exception as e:
+                logger.error(f"Error updating equipment: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении оборудования: {str(e)}")
+                return Equipment()
 
     async def delete_equipment(
         self, request: DeleteEquipmentRequest, context
     ) -> SuccessResponse:
-        if request.equipment_id not in self.equipment:
-            return SuccessResponse(
-                success=False,
-                message=f"Оборудование с ID {request.equipment_id} не найдено",
-                timestamp=datetime.now().isoformat(),
-            )
+        """Удаляет оборудование."""
+        async with self.session_factory() as session:
+            try:
+                repo = EquipmentRepository(session)
+                deleted_equipment = await repo.delete(request.equipment_id)
 
-        del self.equipment[request.equipment_id]
+                if deleted_equipment is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"Оборудование с ID {request.equipment_id} не найдено",
+                        timestamp=datetime.now().isoformat(),
+                    )
 
-        return SuccessResponse(
-            success=True,
-            message=f"Оборудование {request.equipment_id} успешно удалено",
-            timestamp=datetime.now().isoformat(),
-        )
+                return SuccessResponse(
+                    success=True,
+                    message=f"Оборудование {request.equipment_id} успешно удалено",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting equipment: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении оборудования: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
 
     async def get_all_equipment(
         self, request: GetAllEquipmentRequest, context
     ) -> GetAllEquipmentResopnse:
-        return GetAllEquipmentResopnse(
-            equipments=list(self.equipment.values()),
-            total_count=len(self.equipment),
-        )
+        """Получает все оборудование."""
+        async with self.session_factory() as session:
+            try:
+                repo = EquipmentRepository(session)
+                domain_equipments = await repo.get_all()
+
+                proto_equipments = [
+                    domain_equipment_to_proto(e) for e in domain_equipments
+                ]
+
+                return GetAllEquipmentResopnse(
+                    equipments=proto_equipments,
+                    total_count=len(proto_equipments),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all equipment: {e}", exc_info=True)
+                return GetAllEquipmentResopnse(
+                    equipments=[],
+                    total_count=0,
+                )
 
     # -----------------------------------------------------------------
-    #          Новые методы для справочных данных
+    #          Методы для справочных данных
     # -----------------------------------------------------------------
 
-    async def get_reference_data(
-        self, request: GetReferenceDataRequest, context
-    ) -> ReferenceDataResponse:
-        """Получение всех справочных данных."""
-        data_type = request.data_type.lower() if request.data_type else "all"
-
-        response = ReferenceDataResponse(timestamp=datetime.now().isoformat())
-
-        # Стратегии продаж
-        if data_type in ["all", "sales_strategies"]:
-            response.sales_strategies.extend(
-                [
-                    ReferenceDataResponse.SalesStrategyItem(
-                        id="strategy_01",
-                        name="Низкие цены",
-                        description="Стратегия низких цен для привлечения клиентов",
-                        growth_forecast=0.15,
-                        unit_cost=85000,
-                        market_impact="Высокий",
-                        trend_direction="↑",
-                    ),
-                    ReferenceDataResponse.SalesStrategyItem(
-                        id="strategy_02",
-                        name="Дифференциация",
-                        description="Уникальные продукты с повышенным качеством",
-                        growth_forecast=0.10,
-                        unit_cost=120000,
-                        market_impact="Средний",
-                        trend_direction="→",
-                    ),
-                    ReferenceDataResponse.SalesStrategyItem(
-                        id="strategy_03",
-                        name="Премиум",
-                        description="Высококачественные продукты для премиум-сегмента",
-                        growth_forecast=0.08,
-                        unit_cost=180000,
-                        market_impact="Низкий",
-                        trend_direction="↑",
-                    ),
-                ]
-            )
-
-        # Политики работы с браком
-        if data_type in ["all", "defect_policies"]:
-            response.defect_policies.extend(
-                [
-                    ReferenceDataResponse.DefectPolicyItem(
-                        id="policy_01",
-                        name="Утилизировать",
-                        description="Полная утилизация бракованной продукции",
-                    ),
-                    ReferenceDataResponse.DefectPolicyItem(
-                        id="policy_02",
-                        name="Переделать",
-                        description="Исправление брака и повторная обработка",
-                    ),
-                    ReferenceDataResponse.DefectPolicyItem(
-                        id="policy_03",
-                        name="Продать как есть",
-                        description="Продажа брака по сниженной цене",
-                    ),
-                ]
-            )
-
-        # Сертификации
-        if data_type in ["all", "certifications"]:
-            response.certifications.extend(
-                [
-                    ReferenceDataResponse.CertificationItem(
-                        id="cert_01",
-                        name="ГОСТ Р",
-                        description="Российский государственный стандарт",
-                        implementation_cost=500000,
-                        implementation_time_days=90,
-                    ),
-                    ReferenceDataResponse.CertificationItem(
-                        id="cert_02",
-                        name="ISO 9001",
-                        description="Международный стандарт качества",
-                        implementation_cost=750000,
-                        implementation_time_days=120,
-                    ),
-                    ReferenceDataResponse.CertificationItem(
-                        id="cert_03",
-                        name="Евростандарт",
-                        description="Европейские стандарты качества",
-                        implementation_cost=1000000,
-                        implementation_time_days=180,
-                    ),
-                ]
-            )
-
-        # LEAN улучшения
-        if data_type in ["all", "improvements"]:
-            response.improvements.extend(
-                [
-                    ReferenceDataResponse.ImprovementItem(
-                        id="improvement_01",
-                        name="5S система",
-                        description="Система организации рабочего места",
-                        implementation_cost=200000,
-                        efficiency_gain=0.15,
-                    ),
-                    ReferenceDataResponse.ImprovementItem(
-                        id="improvement_02",
-                        name="Канбан",
-                        description="Система управления производством",
-                        implementation_cost=350000,
-                        efficiency_gain=0.20,
-                    ),
-                    ReferenceDataResponse.ImprovementItem(
-                        id="improvement_03",
-                        name="Всеобщее обслуживание оборудования",
-                        description="Система технического обслуживания",
-                        implementation_cost=500000,
-                        efficiency_gain=0.12,
-                    ),
-                ]
-            )
-
-        # Типы компаний
-        if data_type in ["all", "company_types"]:
-            response.company_types.extend(
-                [
-                    ReferenceDataResponse.CompanyTypeItem(
-                        id="company_type_01",
-                        name="Государственная",
-                        description="Государственные предприятия и организации",
-                    ),
-                    ReferenceDataResponse.CompanyTypeItem(
-                        id="company_type_02",
-                        name="Частная",
-                        description="Частные компании и предприятия",
-                    ),
-                    ReferenceDataResponse.CompanyTypeItem(
-                        id="company_type_03",
-                        name="Иностранная",
-                        description="Иностранные компании и представительства",
-                    ),
-                ]
-            )
-
-        # Специализации работников
-        if data_type in ["all", "specialties"]:
-            response.specialties.extend(
-                [
-                    ReferenceDataResponse.SpecialtyItem(
-                        id="specialty_01",
-                        name="Слесарь-сборщик",
-                        description="Сборка и слесарные работы",
-                    ),
-                    ReferenceDataResponse.SpecialtyItem(
-                        id="specialty_02",
-                        name="Инженер-технолог",
-                        description="Разработка технологических процессов",
-                    ),
-                    ReferenceDataResponse.SpecialtyItem(
-                        id="specialty_03",
-                        name="Логист",
-                        description="Организация логистики и транспорта",
-                    ),
-                    ReferenceDataResponse.SpecialtyItem(
-                        id="specialty_04",
-                        name="Контролер качества",
-                        description="Контроль качества продукции",
-                    ),
-                ]
-            )
-
-        # Типы транспорта
-        if data_type in ["all", "vehicle_types"]:
-            response.vehicle_types.extend(
-                [
-                    ReferenceDataResponse.VehicleTypeItem(
-                        id="vehicle_01",
-                        name="Грузовой фургон",
-                        description="Малотоннажный транспорт",
-                        speed_modifier=10,  # 1.0 * 10 для uint32
-                    ),
-                    ReferenceDataResponse.VehicleTypeItem(
-                        id="vehicle_02",
-                        name="Фура",
-                        description="Крупнотоннажный транспорт",
-                        speed_modifier=8,  # 0.8 * 10 для uint32
-                    ),
-                    ReferenceDataResponse.VehicleTypeItem(
-                        id="vehicle_03",
-                        name="Электрокар",
-                        description="Электрический транспорт",
-                        speed_modifier=12,  # 1.2 * 10 для uint32
-                    ),
-                ]
-            )
-
-        # Размеры юнитов
-        if data_type in ["all", "unit_sizes"]:
-            response.unit_sizes.extend(
-                [
-                    ReferenceDataResponse.UnitSizeItem(
-                        id="1U",
-                        name="1U",
-                        description="Стандартный размер 1U",
-                    ),
-                    ReferenceDataResponse.UnitSizeItem(
-                        id="2U",
-                        name="2U",
-                        description="Двойной размер 2U",
-                    ),
-                    ReferenceDataResponse.UnitSizeItem(
-                        id="3U",
-                        name="3U",
-                        description="Тройной размер 3U",
-                    ),
-                    ReferenceDataResponse.UnitSizeItem(
-                        id="6U",
-                        name="6U",
-                        description="Размер 6U для крупных систем",
-                    ),
-                ]
-            )
-
-        # Модели продукции
-        if data_type in ["all", "product_models"]:
-            response.product_models.extend(
-                [
-                    ReferenceDataResponse.ProductModelItem(
-                        id="model_01",
-                        name="Спутник связи",
-                        description="Спутник для телекоммуникаций",
-                        unit_size="3U",
-                    ),
-                    ReferenceDataResponse.ProductModelItem(
-                        id="model_02",
-                        name="Научный спутник",
-                        description="Спутник для научных исследований",
-                        unit_size="2U",
-                    ),
-                    ReferenceDataResponse.ProductModelItem(
-                        id="model_03",
-                        name="Навигационный спутник",
-                        description="Спутник для навигационных систем",
-                        unit_size="6U",
-                    ),
-                ]
-            )
-
-        # Формы оплаты
-        if data_type in ["all", "payment_forms"]:
-            response.payment_forms.extend(
-                [
-                    ReferenceDataResponse.PaymentFormItem(
-                        id="payment_01",
-                        name="100% аванс",
-                        description="Полная предоплата",
-                    ),
-                    ReferenceDataResponse.PaymentFormItem(
-                        id="payment_02",
-                        name="50% аванс, 50% по факту",
-                        description="Частичная предоплата",
-                    ),
-                    ReferenceDataResponse.PaymentFormItem(
-                        id="payment_03",
-                        name="100% по факту",
-                        description="Оплата после выполнения",
-                    ),
-                ]
-            )
-
-        # Типы рабочих мест
-        if data_type in ["all", "workplace_types"]:
-            response.workplace_types.extend(
-                [
-                    ReferenceDataResponse.WorkplaceTypeItem(
-                        id="workplace_type_01",
-                        name="Слесарный участок",
-                        description="Участок слесарных работ",
-                        required_specialty="Слесарь",
-                        required_qualification=4,
-                        compatible_equipment=["Токарный станок", "Фрезерный станок"],
-                    ),
-                    ReferenceDataResponse.WorkplaceTypeItem(
-                        id="workplace_type_02",
-                        name="Сборочный участок",
-                        description="Участок сборки",
-                        required_specialty="Сборщик",
-                        required_qualification=5,
-                        compatible_equipment=["Сборочный стол", "Конвейер"],
-                    ),
-                    ReferenceDataResponse.WorkplaceTypeItem(
-                        id="workplace_type_03",
-                        name="Контроль качества",
-                        description="Участок контроля качества",
-                        required_specialty="Контролер",
-                        required_qualification=4,
-                        compatible_equipment=[
-                            "Измерительное оборудование",
-                            "Микроскоп",
-                        ],
-                    ),
-                ]
-            )
-
-        return response
-
-    async def get_material_types(
+    async def get_available_material_types(
         self, request: GetMaterialTypesRequest, context
     ) -> MaterialTypesResponse:
-        """Получение типов материалов."""
-        return MaterialTypesResponse(
-            material_types=[
-                MaterialTypesResponse.MaterialType(
-                    material_id="material_01",
-                    name="Листовой металл",
-                    description="Металлический лист различной толщины",
-                    unit="кг",
-                    average_price=150,
-                ),
-                MaterialTypesResponse.MaterialType(
-                    material_id="material_02",
-                    name="Электронные компоненты",
-                    description="Микросхемы, резисторы, конденсаторы",
-                    unit="шт",
-                    average_price=75,
-                ),
-                MaterialTypesResponse.MaterialType(
-                    material_id="material_03",
-                    name="Пластик ABS",
-                    description="Технический пластик для корпусов",
-                    unit="кг",
-                    average_price=120,
-                ),
-                MaterialTypesResponse.MaterialType(
-                    material_id="material_04",
-                    name="Крепежные изделия",
-                    description="Болты, гайки, винты",
-                    unit="кг",
-                    average_price=85,
-                ),
-            ],
-            timestamp=datetime.now().isoformat(),
-        )
+        """Получение типов материалов - возвращает уникальные имена товаров из Supplier.product_name."""
+        async with self.session_factory() as session:
+            try:
+                # Используем репозиторий для получения уникальных значений
+                repo = SupplierRepository(session)
+                material_types = await repo.get_distinct_product_names()
 
-    async def get_equipment_types(
+                return MaterialTypesResponse(
+                    material_types=material_types,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting material types: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении типов материалов: {str(e)}")
+                return MaterialTypesResponse(
+                    material_types=[],
+                    timestamp=datetime.now().isoformat(),
+                )
+
+    async def get_available_equipment_types(
         self, request: GetEquipmentTypesRequest, context
     ) -> EquipmentTypesResponse:
-        """Получение типов оборудования."""
-        return EquipmentTypesResponse(
-            equipment_types=[
-                EquipmentTypesResponse.EquipmentType(
-                    equipment_type_id="equipment_type_01",
-                    name="Токарный станок ЧПУ",
-                    description="ЧПУ станок для токарной обработки",
-                    base_reliability=0.95,
-                    base_maintenance_cost=50000,
-                    base_cost=1500000,
-                    compatible_workplaces=["workplace_type_01"],
-                ),
-                EquipmentTypesResponse.EquipmentType(
-                    equipment_type_id="equipment_type_02",
-                    name="Фрезерный станок",
-                    description="Станок для фрезерной обработки",
-                    base_reliability=0.92,
-                    base_maintenance_cost=45000,
-                    base_cost=1200000,
-                    compatible_workplaces=["workplace_type_01"],
-                ),
-                EquipmentTypesResponse.EquipmentType(
-                    equipment_type_id="equipment_type_03",
-                    name="Сборочный стол",
-                    description="Стол для сборки изделий",
-                    base_reliability=0.98,
-                    base_maintenance_cost=10000,
-                    base_cost=250000,
-                    compatible_workplaces=["workplace_type_02"],
-                ),
-                EquipmentTypesResponse.EquipmentType(
-                    equipment_type_id="equipment_type_04",
-                    name="Измерительный комплекс",
-                    description="Комплекс для контроля качества",
-                    base_reliability=0.96,
-                    base_maintenance_cost=30000,
-                    base_cost=800000,
-                    compatible_workplaces=["workplace_type_03"],
-                ),
-            ],
-            timestamp=datetime.now().isoformat(),
-        )
+        """Получение типов оборудования - возвращает уникальные типы из Equipment.equipment_type."""
+        async with self.session_factory() as session:
+            try:
+                # Используем репозиторий для получения уникальных значений
+                repo = EquipmentRepository(session)
+                equipment_types_list = await repo.get_distinct_equipment_types()
 
-    async def get_workplace_types(
+                return EquipmentTypesResponse(
+                    equipment_types=equipment_types_list,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting equipment types: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(
+                    f"Ошибка при получении типов оборудования: {str(e)}"
+                )
+                return EquipmentTypesResponse(
+                    equipment_types=[],
+                    timestamp=datetime.now().isoformat(),
+                )
+
+    async def get_available_workplace_types(
         self, request: GetWorkplaceTypesRequest, context
     ) -> WorkplaceTypesResponse:
         """Получение типов рабочих мест."""
         return WorkplaceTypesResponse(
-            workplace_types=[
-                WorkplaceTypesResponse.WorkplaceType(
-                    workplace_type_id="workplace_type_01",
-                    name="Слесарный участок",
-                    description="Участок для слесарных и механических работ",
-                    required_specialty="Слесарь",
-                    required_qualification=4,
-                    compatible_equipment_types=[
-                        "equipment_type_01",
-                        "equipment_type_02",
-                    ],
-                ),
-                WorkplaceTypesResponse.WorkplaceType(
-                    workplace_type_id="workplace_type_02",
-                    name="Сборочный участок",
-                    description="Участок для сборки готовых изделий",
-                    required_specialty="Сборщик",
-                    required_qualification=5,
-                    compatible_equipment_types=["equipment_type_03"],
-                ),
-                WorkplaceTypesResponse.WorkplaceType(
-                    workplace_type_id="workplace_type_03",
-                    name="Контроль качества",
-                    description="Участок для контроля качества продукции",
-                    required_specialty="Контролер",
-                    required_qualification=4,
-                    compatible_equipment_types=["equipment_type_04"],
-                ),
-                WorkplaceTypesResponse.WorkplaceType(
-                    workplace_type_id="workplace_type_04",
-                    name="Склад материалов",
-                    description="Склад для хранения материалов и комплектующих",
-                    required_specialty="Кладовщик",
-                    required_qualification=3,
-                    compatible_equipment_types=[],
-                ),
-            ],
+            workplace_types=[wt.value for wt in WorkplaceType],
             timestamp=datetime.now().isoformat(),
         )
 
@@ -1278,41 +1395,14 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
         self, request: GetAvailableDefectPoliciesRequest, context
     ) -> DefectPoliciesListResponse:
         """Получение доступных политик работы с браком."""
+        # Исключаем NONE из списка
+        policies = [
+            policy.value
+            for policy in DealingWithDefects
+            if policy != DealingWithDefects.NONE
+        ]
         return DefectPoliciesListResponse(
-            policies=[
-                DefectPoliciesListResponse.DefectPolicyOption(
-                    id="policy_01",
-                    name="Утилизировать",
-                    description="Полная утилизация бракованной продукции",
-                    cost_multiplier=1.0,
-                    quality_impact=0.0,
-                    time_impact=0.1,
-                ),
-                DefectPoliciesListResponse.DefectPolicyOption(
-                    id="policy_02",
-                    name="Переделать",
-                    description="Исправление брака и повторная обработка",
-                    cost_multiplier=1.5,
-                    quality_impact=0.8,
-                    time_impact=0.3,
-                ),
-                DefectPoliciesListResponse.DefectPolicyOption(
-                    id="policy_03",
-                    name="Продать как есть",
-                    description="Продажа брака по сниженной цене",
-                    cost_multiplier=0.6,
-                    quality_impact=0.5,
-                    time_impact=0.0,
-                ),
-                DefectPoliciesListResponse.DefectPolicyOption(
-                    id="policy_04",
-                    name="Вернуть поставщику",
-                    description="Возврат бракованных материалов поставщику",
-                    cost_multiplier=0.8,
-                    quality_impact=0.9,
-                    time_impact=0.2,
-                ),
-            ],
+            policies=policies,
             timestamp=datetime.now().isoformat(),
         )
 
@@ -1320,49 +1410,14 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
         self, request: GetAvailableImprovementsListRequest, context
     ) -> ImprovementsListResponse:
         """Получение доступных LEAN улучшений."""
+        # Исключаем NONE из списка
+        improvements = [
+            improvement.value
+            for improvement in ProductImpruvement
+            if improvement != ProductImpruvement.NONE
+        ]
         return ImprovementsListResponse(
-            improvements=[
-                ImprovementsListResponse.ImprovementOption(
-                    id="improvement_01",
-                    name="5S система",
-                    description="Система организации рабочего места (Сортировка, Соблюдение порядка, Содержание в чистоте, Стандартизация, Совершенствование)",
-                    implementation_cost=200000,
-                    implementation_time_days=30,
-                    efficiency_gain=0.15,
-                    quality_improvement=0.10,
-                    cost_reduction=0.05,
-                ),
-                ImprovementsListResponse.ImprovementOption(
-                    id="improvement_02",
-                    name="Канбан",
-                    description="Система управления производством 'точно в срок'",
-                    implementation_cost=350000,
-                    implementation_time_days=60,
-                    efficiency_gain=0.20,
-                    quality_improvement=0.08,
-                    cost_reduction=0.10,
-                ),
-                ImprovementsListResponse.ImprovementOption(
-                    id="improvement_03",
-                    name="Всеобщее обслуживание оборудования",
-                    description="Система технического обслуживания оборудования с участием всех сотрудников",
-                    implementation_cost=500000,
-                    implementation_time_days=90,
-                    efficiency_gain=0.12,
-                    quality_improvement=0.15,
-                    cost_reduction=0.08,
-                ),
-                ImprovementsListResponse.ImprovementOption(
-                    id="improvement_04",
-                    name="Система подачи предложений",
-                    description="Система сбора и реализации улучшающих предложений от сотрудников",
-                    implementation_cost=150000,
-                    implementation_time_days=45,
-                    efficiency_gain=0.10,
-                    quality_improvement=0.12,
-                    cost_reduction=0.06,
-                ),
-            ],
+            improvements=improvements,
             timestamp=datetime.now().isoformat(),
         )
 
@@ -1371,48 +1426,7 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
     ) -> CertificationsListResponse:
         """Получение доступных сертификаций."""
         return CertificationsListResponse(
-            certifications=[
-                CertificationsListResponse.CertificationOption(
-                    id="cert_01",
-                    name="ГОСТ Р",
-                    description="Российский государственный стандарт качества",
-                    implementation_cost=500000,
-                    implementation_time_days=90,
-                    market_access_improvement=0.40,
-                    quality_recognition=0.35,
-                    government_access=0.50,
-                ),
-                CertificationsListResponse.CertificationOption(
-                    id="cert_02",
-                    name="ISO 9001",
-                    description="Международный стандарт системы менеджмента качества",
-                    implementation_cost=750000,
-                    implementation_time_days=120,
-                    market_access_improvement=0.60,
-                    quality_recognition=0.70,
-                    government_access=0.30,
-                ),
-                CertificationsListResponse.CertificationOption(
-                    id="cert_03",
-                    name="Евростандарт CE",
-                    description="Европейские стандарты качества и безопасности",
-                    implementation_cost=1000000,
-                    implementation_time_days=180,
-                    market_access_improvement=0.80,
-                    quality_recognition=0.85,
-                    government_access=0.20,
-                ),
-                CertificationsListResponse.CertificationOption(
-                    id="cert_04",
-                    name="ISO 14001",
-                    description="Международный стандарт системы экологического менеджмента",
-                    implementation_cost=600000,
-                    implementation_time_days=100,
-                    market_access_improvement=0.50,
-                    quality_recognition=0.40,
-                    government_access=0.40,
-                ),
-            ],
+            certifications=[cert.value for cert in Certification],
             timestamp=datetime.now().isoformat(),
         )
 
@@ -1420,51 +1434,175 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
         self, request: GetAvailableSalesStrategiesRequest, context
     ) -> SalesStrategiesListResponse:
         """Получение доступных стратегий продаж."""
+        # Исключаем NONE из списка
+        strategies = [
+            strategy.value
+            for strategy in SaleStrategest
+            if strategy != SaleStrategest.NONE
+        ]
         return SalesStrategiesListResponse(
-            strategies=[
-                SalesStrategiesListResponse.SalesStrategyOption(
-                    id="strategy_01",
-                    name="Низкие цены",
-                    description="Стратегия низких цен для привлечения клиентов и захвата рынка",
-                    growth_forecast=0.15,
-                    unit_cost=85000,
-                    market_impact="Высокий - быстрое увеличение доли рынка",
-                    trend_direction="↑",
-                    compatible_product_models=["model_01", "model_02"],
-                ),
-                SalesStrategiesListResponse.SalesStrategyOption(
-                    id="strategy_02",
-                    name="Дифференциация",
-                    description="Уникальные продукты с повышенным качеством и функциональностью",
-                    growth_forecast=0.10,
-                    unit_cost=120000,
-                    market_impact="Средний - стабильный рост в премиум-сегменте",
-                    trend_direction="→",
-                    compatible_product_models=["model_02", "model_03"],
-                ),
-                SalesStrategiesListResponse.SalesStrategyOption(
-                    id="strategy_03",
-                    name="Премиум",
-                    description="Высококачественные продукты для премиум-сегмента с максимальной маржой",
-                    growth_forecast=0.08,
-                    unit_cost=180000,
-                    market_impact="Низкий - специализированный сегмент",
-                    trend_direction="↑",
-                    compatible_product_models=["model_03"],
-                ),
-                SalesStrategiesListResponse.SalesStrategyOption(
-                    id="strategy_04",
-                    name="Фокусировка",
-                    description="Концентрация на конкретном рыночном сегменте или нише",
-                    growth_forecast=0.12,
-                    unit_cost=95000,
-                    market_impact="Высокий - лидерство в узком сегменте",
-                    trend_direction="↑",
-                    compatible_product_models=["model_01", "model_02", "model_03"],
-                ),
-            ],
+            strategies=strategies,
             timestamp=datetime.now().isoformat(),
         )
+
+    async def get_available_lean_improvements(
+        self, request: GetAvailableLeanImprovementsRequest, context
+    ) -> GetAvailableLeanImprovementsResponse:
+        """Получение доступных LEAN улучшений из БД."""
+        async with self.session_factory() as session:
+            try:
+                repo = LeanImprovementRepository(session)
+                domain_improvements = await repo.get_all()
+
+                proto_improvements = [
+                    domain_lean_improvement_to_proto(imp) for imp in domain_improvements
+                ]
+
+                return GetAvailableLeanImprovementsResponse(
+                    improvements=proto_improvements,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error getting available lean improvements: {e}", exc_info=True
+                )
+                return GetAvailableLeanImprovementsResponse(
+                    improvements=[],
+                    timestamp=datetime.now().isoformat(),
+                )
+
+    # -----------------------------------------------------------------
+    #          Методы для LEAN улучшений (CRUD)
+    # -----------------------------------------------------------------
+
+    async def create_lean_improvement(
+        self, request: CreateLeanImprovementRequest, context
+    ) -> LeanImprovement:
+        """Создает новое LEAN улучшение."""
+        async with self.session_factory() as session:
+            try:
+                # Преобразуем proto запрос в доменную сущность
+                domain_improvement = proto_lean_improvement_to_domain(
+                    LeanImprovement(
+                        improvement_id="",
+                        name=request.name,
+                        is_implemented=request.is_implemented,
+                        implementation_cost=request.implementation_cost,
+                        efficiency_gain=request.efficiency_gain,
+                    )
+                )
+
+                repo = LeanImprovementRepository(session)
+                saved_improvement = await repo.save(domain_improvement)
+
+                if saved_improvement is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при создании LEAN улучшения")
+                    return LeanImprovement()
+
+                return domain_lean_improvement_to_proto(saved_improvement)
+            except Exception as e:
+                logger.error(f"Error creating lean improvement: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при создании LEAN улучшения: {str(e)}")
+                return LeanImprovement()
+
+    async def update_lean_improvement(
+        self, request: UpdateLeanImprovementRequest, context
+    ) -> LeanImprovement:
+        """Обновляет LEAN улучшение."""
+        async with self.session_factory() as session:
+            try:
+                repo = LeanImprovementRepository(session)
+                existing_improvement = await repo.get(request.improvement_id)
+
+                if existing_improvement is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"LEAN улучшение с ID {request.improvement_id} не найдено"
+                    )
+                    return LeanImprovement()
+
+                # Преобразуем существующее улучшение в proto для обновления
+                existing_proto = domain_lean_improvement_to_proto(existing_improvement)
+
+                # Обновляем поля в proto объекте
+                if request.name:
+                    existing_proto.name = request.name
+                existing_proto.is_implemented = request.is_implemented
+                if request.implementation_cost:
+                    existing_proto.implementation_cost = request.implementation_cost
+                if request.efficiency_gain:
+                    existing_proto.efficiency_gain = request.efficiency_gain
+
+                # Преобразуем обновленный proto обратно в доменную сущность
+                updated_domain = proto_lean_improvement_to_domain(existing_proto)
+                updated_improvement = await repo.save(updated_domain)
+
+                if updated_improvement is None:
+                    context.set_code(grpc.StatusCode.INTERNAL)
+                    context.set_details("Ошибка при обновлении LEAN улучшения")
+                    return LeanImprovement()
+
+                return domain_lean_improvement_to_proto(updated_improvement)
+            except Exception as e:
+                logger.error(f"Error updating lean improvement: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при обновлении LEAN улучшения: {str(e)}")
+                return LeanImprovement()
+
+    async def delete_lean_improvement(
+        self, request: DeleteLeanImprovementRequest, context
+    ) -> SuccessResponse:
+        """Удаляет LEAN улучшение."""
+        async with self.session_factory() as session:
+            try:
+                repo = LeanImprovementRepository(session)
+                deleted_improvement = await repo.delete(request.improvement_id)
+
+                if deleted_improvement is None:
+                    return SuccessResponse(
+                        success=False,
+                        message=f"LEAN улучшение с ID {request.improvement_id} не найдено",
+                        timestamp=datetime.now().isoformat(),
+                    )
+
+                return SuccessResponse(
+                    success=True,
+                    message=f"LEAN улучшение {request.improvement_id} успешно удалено",
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error deleting lean improvement: {e}", exc_info=True)
+                return SuccessResponse(
+                    success=False,
+                    message=f"Ошибка при удалении LEAN улучшения: {str(e)}",
+                    timestamp=datetime.now().isoformat(),
+                )
+
+    async def get_all_lean_improvements(
+        self, request: GetAllLeanImprovementsRequest, context
+    ) -> GetAllLeanImprovementsResponse:
+        """Получает все LEAN улучшения."""
+        async with self.session_factory() as session:
+            try:
+                repo = LeanImprovementRepository(session)
+                domain_improvements = await repo.get_all()
+
+                proto_improvements = [
+                    domain_lean_improvement_to_proto(imp) for imp in domain_improvements
+                ]
+
+                return GetAllLeanImprovementsResponse(
+                    improvements=proto_improvements,
+                    total_count=len(proto_improvements),
+                )
+            except Exception as e:
+                logger.error(f"Error getting all lean improvements: {e}", exc_info=True)
+                return GetAllLeanImprovementsResponse(
+                    improvements=[],
+                    total_count=0,
+                )
 
     async def ping(self, request: PingRequest, context) -> SuccessResponse:
         return SuccessResponse(
