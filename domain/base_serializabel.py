@@ -51,6 +51,10 @@ class RedisSerializable:
 
         result = {}
         for field in fields(self):
+            # Пропускаем поля с init=False, так как они не являются частью данных
+            if not field.init:
+                continue
+
             value = getattr(self, field.name)
 
             if exclude_none and value is None:
