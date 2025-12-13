@@ -2,7 +2,13 @@ version: '3.8'
 
 services:
   simulation_service:
+    # Для локальной разработки используйте build: .
     build: .
+    # Для использования образа из registry:
+    # image: ghcr.io/sergey-gerasimo/simulation-grpc-service:sha-e90237a
+    # Или используйте latest (но не забудьте обновить: docker pull ghcr.io/sergey-gerasimo/simulation-grpc-service:latest)
+    # image: ghcr.io/sergey-gerasimo/simulation-grpc-service:latest
+    pull_policy: always # Всегда обновлять образ при запуске
     ports:
       - "50051:50051"
       - "50052:50052"

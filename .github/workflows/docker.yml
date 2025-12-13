@@ -265,8 +265,21 @@ jobs:
         push: ${{ github.event_name != 'pull_request' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+        # Используем кэш только для слоев с зависимостями
+        # Для слоя с кодом используем SHA коммита для инвалидации кэша
+        cache-from: |
+          type=gha,scope=deps
+          type=gha,scope=${{ github.sha }}
+        cache-to: |
+          type=gha,mode=max,scope=deps
+          type=gha,mode=max,scope=${{ github.sha }}
+        # Добавляем build-args для инвалидации кэша при изменении кода
+        # Эти аргументы используются в Dockerfile для меток и инвалидации кэша
+        build-args: |
+          BUILD_DATE=${{ github.event.head_commit.timestamp || github.run_started_at }}
+          COMMIT_SHA=${{ github.sha }}
+        # Не используем кэш для последнего слоя с кодом
+        no-cache: false
         provenance: false  # Может помочь с permission issues
 
     - name: Verify Docker image
