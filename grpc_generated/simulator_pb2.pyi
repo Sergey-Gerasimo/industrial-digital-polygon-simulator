@@ -1563,10 +1563,12 @@ class DefectPoliciesResponse(_message.Message):
     def __init__(self, available_policies: _Optional[_Iterable[str]] = ..., current_policy: _Optional[str] = ..., timestamp: _Optional[str] = ...) -> None: ...
 
 class GetAllMetricsRequest(_message.Message):
-    __slots__ = ("simulation_id",)
+    __slots__ = ("simulation_id", "step")
     SIMULATION_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_FIELD_NUMBER: _ClassVar[int]
     simulation_id: str
-    def __init__(self, simulation_id: _Optional[str] = ...) -> None: ...
+    step: int
+    def __init__(self, simulation_id: _Optional[str] = ..., step: _Optional[int] = ...) -> None: ...
 
 class AllMetricsResponse(_message.Message):
     __slots__ = ("factory", "production", "quality", "engineering", "commercial", "procurement", "timestamp")

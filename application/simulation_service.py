@@ -100,12 +100,12 @@ from infrastructure.repositories import (
 from application.proto_mappers import (
     domain_simulation_to_proto,
     proto_simulation_to_domain,
-    domain_factory_metrics_to_proto,
-    domain_production_metrics_to_proto,
-    domain_quality_metrics_to_proto,
-    domain_engineering_metrics_to_proto,
-    domain_commercial_metrics_to_proto,
-    domain_procurement_metrics_to_proto,
+    domain_factory_metrics_obj_to_proto,
+    domain_production_metrics_obj_to_proto,
+    domain_quality_metrics_obj_to_proto,
+    domain_engineering_metrics_obj_to_proto,
+    domain_commercial_metrics_obj_to_proto,
+    domain_procurement_metrics_obj_to_proto,
     proto_process_graph_to_domain,
     proto_production_plan_row_to_domain,
 )
@@ -799,104 +799,221 @@ class SimulationServiceImpl(SimulationServiceServicer):
     #          Методы получения метрик и мониторинга
     # -----------------------------------------------------------------
 
-    async def _get_metrics_helper(
-        self,
-        simulation_id: str,
-        getter_func: Callable,
-        mapper_func: Callable,
-        response_class: type,
-        context,
-    ):
-        """Универсальный помощник для получения метрик."""
-        async with self.session_factory() as session:
-            simulation = await self._load_simulation(session, simulation_id, context)
-            if simulation is None:
-                return response_class()
-
-            try:
-                metrics = getter_func(simulation)
-                proto_metrics = mapper_func(metrics)
-                return response_class(
-                    metrics=proto_metrics,
-                    timestamp=datetime.now().isoformat(),
-                )
-            except Exception as e:
-                logger.error(f"Error getting metrics: {e}", exc_info=True)
-                context.set_code(grpc.StatusCode.INTERNAL)
-                context.set_details(f"Ошибка при получении метрик: {str(e)}")
-                return response_class()
-
     async def get_factory_metrics(
         self, request: GetMetricsRequest, context
     ) -> FactoryMetricsResponse:
         """Получает метрики завода."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_factory_metrics(),
-            domain_factory_metrics_to_proto,
-            FactoryMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return FactoryMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return FactoryMetricsResponse()
+
+            try:
+                metrics = simulation.get_factory_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Метрики завода для шага {step} не найдены")
+                    return FactoryMetricsResponse()
+
+                proto_metrics = domain_factory_metrics_obj_to_proto(metrics)
+                return FactoryMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting factory metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return FactoryMetricsResponse()
 
     async def get_production_metrics(
         self, request: GetMetricsRequest, context
     ) -> ProductionMetricsResponse:
         """Получает метрики производства."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_production_metrics(),
-            domain_production_metrics_to_proto,
-            ProductionMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return ProductionMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return ProductionMetricsResponse()
+
+            try:
+                metrics = simulation.get_production_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Метрики производства для шага {step} не найдены"
+                    )
+                    return ProductionMetricsResponse()
+
+                proto_metrics = domain_production_metrics_obj_to_proto(metrics)
+                return ProductionMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting production metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return ProductionMetricsResponse()
 
     async def get_quality_metrics(
         self, request: GetMetricsRequest, context
     ) -> QualityMetricsResponse:
         """Получает метрики качества."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_quality_metrics(),
-            domain_quality_metrics_to_proto,
-            QualityMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return QualityMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return QualityMetricsResponse()
+
+            try:
+                metrics = simulation.get_quality_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Метрики качества для шага {step} не найдены")
+                    return QualityMetricsResponse()
+
+                proto_metrics = domain_quality_metrics_obj_to_proto(metrics)
+                return QualityMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting quality metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return QualityMetricsResponse()
 
     async def get_engineering_metrics(
         self, request: GetMetricsRequest, context
     ) -> EngineeringMetricsResponse:
         """Получает метрики инженерии."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_engineering_metrics(),
-            domain_engineering_metrics_to_proto,
-            EngineeringMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return EngineeringMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return EngineeringMetricsResponse()
+
+            try:
+                metrics = simulation.get_engineering_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Инженерные метрики для шага {step} не найдены"
+                    )
+                    return EngineeringMetricsResponse()
+
+                proto_metrics = domain_engineering_metrics_obj_to_proto(metrics)
+                return EngineeringMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting engineering metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return EngineeringMetricsResponse()
 
     async def get_commercial_metrics(
         self, request: GetMetricsRequest, context
     ) -> CommercialMetricsResponse:
         """Получает метрики коммерции."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_commercial_metrics(),
-            domain_commercial_metrics_to_proto,
-            CommercialMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return CommercialMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return CommercialMetricsResponse()
+
+            try:
+                metrics = simulation.get_commercial_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Коммерческие метрики для шага {step} не найдены"
+                    )
+                    return CommercialMetricsResponse()
+
+                proto_metrics = domain_commercial_metrics_obj_to_proto(metrics)
+                return CommercialMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting commercial metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return CommercialMetricsResponse()
 
     async def get_procurement_metrics(
         self, request: GetMetricsRequest, context
     ) -> ProcurementMetricsResponse:
         """Получает метрики закупок."""
-        return await self._get_metrics_helper(
-            request.simulation_id,
-            lambda sim: sim.get_procurement_metrics(),
-            domain_procurement_metrics_to_proto,
-            ProcurementMetricsResponse,
-            context,
-        )
+        async with self.session_factory() as session:
+            simulation = await self._load_simulation(
+                session, request.simulation_id, context
+            )
+            if simulation is None:
+                return ProcurementMetricsResponse()
+
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return ProcurementMetricsResponse()
+
+            try:
+                metrics = simulation.get_procurement_metrics(step=step)
+                if metrics is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Метрики закупок для шага {step} не найдены")
+                    return ProcurementMetricsResponse()
+
+                proto_metrics = domain_procurement_metrics_obj_to_proto(metrics)
+                return ProcurementMetricsResponse(
+                    metrics=proto_metrics,
+                    timestamp=datetime.now().isoformat(),
+                )
+            except Exception as e:
+                logger.error(f"Error getting procurement metrics: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Ошибка при получении метрик: {str(e)}")
+                return ProcurementMetricsResponse()
 
     async def get_all_metrics(
         self, request: GetAllMetricsRequest, context
@@ -909,24 +1026,53 @@ class SimulationServiceImpl(SimulationServiceServicer):
             if simulation is None:
                 return AllMetricsResponse()
 
+            step = request.step
+            if step == 0:
+                context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+                context.set_details("Параметр step обязателен и должен быть больше 0")
+                return AllMetricsResponse()
+
             try:
-                factory_metrics = domain_factory_metrics_to_proto(
-                    simulation.get_factory_metrics()
+                factory_metrics_domain = simulation.get_factory_metrics(step=step)
+                production_metrics_domain = simulation.get_production_metrics(step=step)
+                quality_metrics_domain = simulation.get_quality_metrics(step=step)
+                engineering_metrics_domain = simulation.get_engineering_metrics(
+                    step=step
                 )
-                production_metrics = domain_production_metrics_to_proto(
-                    simulation.get_production_metrics()
+                commercial_metrics_domain = simulation.get_commercial_metrics(step=step)
+                procurement_metrics_domain = simulation.get_procurement_metrics(
+                    step=step
                 )
-                quality_metrics = domain_quality_metrics_to_proto(
-                    simulation.get_quality_metrics()
+
+                if (
+                    factory_metrics_domain is None
+                    or production_metrics_domain is None
+                    or quality_metrics_domain is None
+                    or engineering_metrics_domain is None
+                    or commercial_metrics_domain is None
+                    or procurement_metrics_domain is None
+                ):
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(f"Метрики для шага {step} не найдены")
+                    return AllMetricsResponse()
+
+                factory_metrics = domain_factory_metrics_obj_to_proto(
+                    factory_metrics_domain
                 )
-                engineering_metrics = domain_engineering_metrics_to_proto(
-                    simulation.get_engineering_metrics()
+                production_metrics = domain_production_metrics_obj_to_proto(
+                    production_metrics_domain
                 )
-                commercial_metrics = domain_commercial_metrics_to_proto(
-                    simulation.get_commercial_metrics()
+                quality_metrics = domain_quality_metrics_obj_to_proto(
+                    quality_metrics_domain
                 )
-                procurement_metrics = domain_procurement_metrics_to_proto(
-                    simulation.get_procurement_metrics()
+                engineering_metrics = domain_engineering_metrics_obj_to_proto(
+                    engineering_metrics_domain
+                )
+                commercial_metrics = domain_commercial_metrics_obj_to_proto(
+                    commercial_metrics_domain
+                )
+                procurement_metrics = domain_procurement_metrics_obj_to_proto(
+                    procurement_metrics_domain
                 )
 
                 return AllMetricsResponse(

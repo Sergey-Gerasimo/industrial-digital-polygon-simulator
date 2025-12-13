@@ -661,7 +661,7 @@ class Simulation(RedisSerializable):
             if result.step == step:
                 if result.procurement_metrics is not None:
                     return result.procurement_metrics
-                break
+                return None
 
         return None
 
@@ -678,7 +678,6 @@ class Simulation(RedisSerializable):
         for result in self.results:
             if result.step == step:
                 return result.factory_metrics
-            break
 
         return None
 
@@ -695,7 +694,6 @@ class Simulation(RedisSerializable):
         for result in self.results:
             if result.step == step:
                 return result.production_metrics
-            break
 
         return None
 
@@ -712,7 +710,6 @@ class Simulation(RedisSerializable):
         for result in self.results:
             if result.step == step:
                 return result.quality_metrics
-            break
 
         return None
 
@@ -729,7 +726,6 @@ class Simulation(RedisSerializable):
         for result in self.results:
             if result.step == step:
                 return result.engineering_metrics
-            break
 
         return None
 
@@ -746,7 +742,6 @@ class Simulation(RedisSerializable):
         for result in self.results:
             if result.step == step:
                 return result.commercial_metrics
-            break
 
         return None
 

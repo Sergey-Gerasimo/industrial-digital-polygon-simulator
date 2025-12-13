@@ -39,6 +39,8 @@ from grpc_generated.simulator_pb2 import (
     SetDeliveryPeriodRequest,
     SetCertificationStatusRequest,
     WarehouseType,
+    GetMetricsRequest,
+    GetAllMetricsRequest,
 )
 from grpc_generated.simulator_pb2_grpc import SimulationServiceStub
 from domain import (
@@ -561,3 +563,306 @@ class TestStateUpdateMethods:
         get_response = simulation_stub.get_simulation(get_request)
         new_size = get_response.simulations.parameters[0].materials_warehouse.size
         assert new_size == initial_size + 100
+
+    # -----------------------------------------------------------------
+    #          Тесты для получения метрик
+    # -----------------------------------------------------------------
+
+    def test_get_factory_metrics_success(self, simulation_stub):
+        """Тест успешного получения метрик завода."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию (нужен хотя бы один шаг)
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем метрики завода с указанием step=1
+        metrics_response = simulation_stub.get_factory_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert hasattr(metrics_response.metrics, "total_procurement_cost")
+        assert hasattr(metrics_response.metrics, "profitability")
+        assert hasattr(metrics_response.metrics, "oee")
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_production_metrics_success(self, simulation_stub):
+        """Тест успешного получения метрик производства."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем метрики производства с указанием step=1
+        metrics_response = simulation_stub.get_production_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_quality_metrics_success(self, simulation_stub):
+        """Тест успешного получения метрик качества."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем метрики качества с указанием step=1
+        metrics_response = simulation_stub.get_quality_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_engineering_metrics_success(self, simulation_stub):
+        """Тест успешного получения инженерных метрик."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем инженерные метрики с указанием step=1
+        metrics_response = simulation_stub.get_engineering_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_commercial_metrics_success(self, simulation_stub):
+        """Тест успешного получения коммерческих метрик."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем коммерческие метрики с указанием step=1
+        metrics_response = simulation_stub.get_commercial_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_procurement_metrics_success(self, simulation_stub):
+        """Тест успешного получения метрик закупок."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем метрики закупок с указанием step=1
+        metrics_response = simulation_stub.get_procurement_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert metrics_response.metrics
+        assert isinstance(metrics_response.timestamp, str)
+
+    def test_get_all_metrics_success(self, simulation_stub):
+        """Тест успешного получения всех метрик."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Получаем все метрики с указанием step=1
+        all_metrics_response = simulation_stub.get_all_metrics(
+            GetAllMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+        assert all_metrics_response.factory
+        assert all_metrics_response.production
+        assert all_metrics_response.quality
+        assert all_metrics_response.engineering
+        assert all_metrics_response.commercial
+        assert all_metrics_response.procurement
+        assert isinstance(all_metrics_response.timestamp, str)
+
+    def test_get_metrics_with_step_parameter(self, simulation_stub):
+        """Тест получения метрик с параметром step - должен работать без ошибок."""
+        # Создаем симуляцию
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию несколько раз для создания нескольких шагов
+        # После первого запуска: step=1 доступен
+        # После второго запуска: step=1 и step=2 доступны
+        for _ in range(2):
+            run_response = simulation_stub.run_simulation(
+                RunSimulationRequest(simulation_id=simulation_id)
+            )
+            assert run_response.simulations
+
+        # Проверяем, что результаты созданы
+        get_request = GetSimulationRequest(simulation_id=simulation_id)
+        get_response = simulation_stub.get_simulation(get_request)
+        simulation = get_response.simulations
+        # После двух запусков должно быть 2 результата (step=1 и step=2)
+        assert (
+            len(simulation.results) >= 2
+        ), f"Ожидалось минимум 2 результата, получено {len(simulation.results)}"
+        result_steps = [r.step for r in simulation.results]
+        assert 1 in result_steps, f"Step 1 должен быть в результатах: {result_steps}"
+        assert 2 in result_steps, f"Step 2 должен быть в результатах: {result_steps}"
+
+        # Получаем метрики с явным указанием step=1 - должно работать
+        metrics_response = simulation_stub.get_factory_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        assert metrics_response.metrics
+
+        # Получаем метрики с step=2 - должно работать
+        # После двух запусков должен быть доступен step=2
+        metrics_response_2 = simulation_stub.get_factory_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=2)
+        )
+        assert metrics_response_2.metrics
+
+        # Все типы метрик должны работать с step
+        simulation_stub.get_production_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        simulation_stub.get_quality_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        simulation_stub.get_engineering_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        simulation_stub.get_commercial_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        simulation_stub.get_procurement_metrics(
+            GetMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+        simulation_stub.get_all_metrics(
+            GetAllMetricsRequest(simulation_id=simulation_id, step=1)
+        )
+
+    def test_get_metrics_step_not_provided_error(self, simulation_stub):
+        """Тест получения метрик без указания step - должна возникать ошибка."""
+        # Создаем симуляцию и выполняем шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Попытка получить метрики без указания step должна завершиться ошибкой
+        # step=0 считается как "не указан" в protobuf
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_factory_metrics(
+                GetMetricsRequest(simulation_id=simulation_id, step=0)
+            )
+
+        assert exc_info.value.code() in [
+            grpc.StatusCode.INVALID_ARGUMENT,
+            grpc.StatusCode.INTERNAL,
+            grpc.StatusCode.NOT_FOUND,
+        ]
+
+    def test_get_metrics_invalid_step_error(self, simulation_stub):
+        """Тест получения метрик с несуществующим step - должна возникать ошибка."""
+        # Создаем симуляцию и выполняем только один шаг
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Запускаем симуляцию один раз (step=1)
+        run_response = simulation_stub.run_simulation(
+            RunSimulationRequest(simulation_id=simulation_id)
+        )
+        assert run_response.simulations
+
+        # Попытка получить метрики для step=5 (несуществующего) должна завершиться ошибкой
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_factory_metrics(
+                GetMetricsRequest(simulation_id=simulation_id, step=5)
+            )
+
+        assert exc_info.value.code() in [
+            grpc.StatusCode.INTERNAL,
+            grpc.StatusCode.NOT_FOUND,
+        ]
+
+    def test_get_metrics_simulation_not_found(self, simulation_stub):
+        """Тест получения метрик для несуществующей симуляции."""
+        non_existent_id = "non-existent-simulation-id"
+
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_factory_metrics(
+                GetMetricsRequest(simulation_id=non_existent_id, step=1)
+            )
+
+        assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+        # То же самое для всех типов метрик
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_production_metrics(
+                GetMetricsRequest(simulation_id=non_existent_id, step=1)
+            )
+        assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_all_metrics(
+                GetAllMetricsRequest(simulation_id=non_existent_id, step=1)
+            )
+        assert exc_info.value.code() == grpc.StatusCode.NOT_FOUND
+
+    def test_get_metrics_no_simulation_data(self, simulation_stub):
+        """Тест получения метрик для симуляции без данных (только создана, не запущена)."""
+        # Создаем симуляцию, но не запускаем
+        create_response = simulation_stub.create_simulation(CreateSimulationRquest())
+        simulation_id = create_response.simulations.simulation_id
+
+        # Попытка получить метрики должна завершиться ошибкой
+        # так как симуляция не имеет данных после шагов
+        with pytest.raises(grpc.RpcError) as exc_info:
+            simulation_stub.get_factory_metrics(
+                GetMetricsRequest(simulation_id=simulation_id, step=1)
+            )
+
+        # Код ошибки может быть INTERNAL или NOT_FOUND в зависимости от реализации
+        assert exc_info.value.code() in [
+            grpc.StatusCode.INTERNAL,
+            grpc.StatusCode.NOT_FOUND,
+        ]

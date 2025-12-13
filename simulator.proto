@@ -823,7 +823,7 @@ message GetAllEquipmentResopnse {
 
 message GetMetricsRequest {
     string simulation_id = 1;
-    optional uint32 step = 2;
+    uint32 step = 2;
 }
 
 message FactoryMetricsResponse {
@@ -966,6 +966,7 @@ message DefectPoliciesResponse {
 
 message GetAllMetricsRequest {
     string simulation_id = 1;
+    uint32 step = 2;
 }
 
 message AllMetricsResponse {
