@@ -2,6 +2,7 @@
 
 from uuid import uuid4
 from dataclasses import replace
+from infrastructure.config import app_logger
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,6 +45,8 @@ async def create_default_simulation_parameters(
     # Получаем все LeanImprovement из БД
     lean_improvement_repo = LeanImprovementRepository(session)
     all_lean_improvements = await lean_improvement_repo.get_all()
+
+    app_logger.info(f"All lean improvements: {all_lean_improvements}")
 
     # Создаем копии с is_implemented=False
     lean_improvements = [

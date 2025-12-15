@@ -210,6 +210,23 @@ class GRPCLoggerConfig:
             filter=lambda record: "grpc.access" in record["name"].lower(),
         )
 
+        console_format = (
+            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{module}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+            "<level>{message}</level>"
+        )
+
+        logger.add(
+            sys.stderr,
+            format=console_format,
+            level="DEBUG",
+            colorize=True,
+            serialize=False,  # Не сериализуем в JSON для консоли
+            backtrace=True,
+            diagnose=debug,
+        )
+
     @staticmethod
     def _configure_intercept_handler(level: str) -> None:
         """Настраивает перехват стандартного logging"""

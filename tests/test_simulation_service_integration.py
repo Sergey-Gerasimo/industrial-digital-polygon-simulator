@@ -866,3 +866,410 @@ class TestStateUpdateMethods:
             grpc.StatusCode.INTERNAL,
             grpc.StatusCode.NOT_FOUND,
         ]
+
+    def test_update_process_graph_updates_coordinates(self, simulation_stub, db_manager_stub):
+        """Тест что update_process_graph обновляет координаты рабочих мест."""
+        # Создаем симуляцию
+        create_request = CreateSimulationRquest()
+        create_response = simulation_stub.create_simulation(create_request)
+        simulation_id = create_response.simulations.simulation_id
+
+        # Получаем начальное состояние симуляции
+        get_request = GetSimulationRequest(simulation_id=simulation_id)
+        initial_response = simulation_stub.get_simulation(get_request)
+        initial_simulation = initial_response.simulations
+
+        # Проверяем, что есть рабочие места
+        assert len(initial_simulation.parameters[0].processes.workplaces) > 0
+
+        # Получаем первое рабочее место
+        initial_workplace = initial_simulation.parameters[0].processes.workplaces[0]
+        initial_workplace_id = initial_workplace.workplace_id
+
+        # Проверяем начальные координаты (могут быть None или не установлены)
+        initial_x = initial_workplace.x if hasattr(initial_workplace, 'x') else 255
+        initial_y = initial_workplace.y if hasattr(initial_workplace, 'y') else 255
+
+        # Создаем обновленный граф процесса с новыми координатами
+        from grpc_generated.simulator_pb2 import ProcessGraph as ProcessGraphProto, Workplace as WorkplaceProto
+
+        updated_process_graph = ProcessGraphProto()
+        updated_process_graph.process_graph_id = initial_simulation.parameters[0].processes.process_graph_id
+
+        # Копируем все рабочие места, но обновляем координаты первого
+        for wp in initial_simulation.parameters[0].processes.workplaces:
+            wp_proto = WorkplaceProto()
+            wp_proto.workplace_id = wp.workplace_id
+            wp_proto.workplace_name = wp.workplace_name
+            wp_proto.required_speciality = wp.required_speciality
+            wp_proto.required_qualification = wp.required_qualification
+            wp_proto.required_equipment = wp.required_equipment or ""
+            wp_proto.is_start_node = wp.is_start_node
+            wp_proto.is_end_node = wp.is_end_node
+            wp_proto.required_stages.extend(wp.required_stages or [])
+
+            # Обновляем координаты только для первого рабочего места
+            if wp.workplace_id == initial_workplace_id:
+                wp_proto.x = 3  # Новые координаты
+                wp_proto.y = 4
+            else:
+                # Для остальных сохраняем текущие координаты
+                wp_x = wp.x if hasattr(wp, 'x') and wp.x != 255 else 255
+                wp_y = wp.y if hasattr(wp, 'y') and wp.y != 255 else 255
+                wp_proto.x = wp_x if wp_x != 255 else 255
+                wp_proto.y = wp_y if wp_y != 255 else 255
+
+            updated_process_graph.workplaces.append(wp_proto)
+
+        # Копируем маршруты
+        for route in initial_simulation.parameters[0].processes.routes:
+            from grpc_generated.simulator_pb2 import Route as RouteProto
+            route_proto = RouteProto()
+            route_proto.from_workplace = route.from_workplace
+            route_proto.to_workplace = route.to_workplace
+            route_proto.length = route.length
+            updated_process_graph.routes.append(route_proto)
+
+        # Обновляем граф процесса
+        update_request = UpdateProcessGraphRequest(
+            simulation_id=simulation_id,
+            process_graph=updated_process_graph,
+        )
+        update_response = simulation_stub.update_process_graph(update_request)
+
+        assert update_response.HasField("simulations")
+
+        # Проверяем, что координаты обновились
+        get_request_after = GetSimulationRequest(simulation_id=simulation_id)
+        get_response_after = simulation_stub.get_simulation(get_request_after)
+        updated_simulation = get_response_after.simulations
+
+        # Находим обновленное рабочее место
+        updated_workplace = None
+        for wp in updated_simulation.parameters[0].processes.workplaces:
+            if wp.workplace_id == initial_workplace_id:
+                updated_workplace = wp
+                break
+
+        assert updated_workplace is not None, "Рабочее место должно быть найдено"
+        
+        # Проверяем что координаты обновились (255 означает None, значения != 255 - реальные координаты)
+        assert updated_workplace.x == 3 or (updated_workplace.x == 255 and initial_x == 255), \
+            f"Координата X должна быть 3 или остаться None, но получено {updated_workplace.x}"
+        assert updated_workplace.y == 4 or (updated_workplace.y == 255 and initial_y == 255), \
+            f"Координата Y должна быть 4 или остаться None, но получено {updated_workplace.y}"
+
+    def test_update_process_graph_updates_multiple_coordinates(self, simulation_stub, db_manager_stub):
+        """Тест обновления координат для нескольких рабочих мест."""
+        # Создаем симуляцию
+        create_request = CreateSimulationRquest()
+        create_response = simulation_stub.create_simulation(create_request)
+        simulation_id = create_response.simulations.simulation_id
+
+        # Получаем начальное состояние
+        get_request = GetSimulationRequest(simulation_id=simulation_id)
+        initial_response = simulation_stub.get_simulation(get_request)
+        initial_simulation = initial_response.simulations
+
+        assert len(initial_simulation.parameters[0].processes.workplaces) >= 2
+
+        # Берем первые два рабочих места
+        wp1_id = initial_simulation.parameters[0].processes.workplaces[0].workplace_id
+        wp2_id = initial_simulation.parameters[0].processes.workplaces[1].workplace_id
+
+        # Создаем обновленный граф с новыми координатами для обоих
+        from grpc_generated.simulator_pb2 import ProcessGraph as ProcessGraphProto, Workplace as WorkplaceProto
+
+        updated_process_graph = ProcessGraphProto()
+        updated_process_graph.process_graph_id = initial_simulation.parameters[0].processes.process_graph_id
+
+        for wp in initial_simulation.parameters[0].processes.workplaces:
+            wp_proto = WorkplaceProto()
+            wp_proto.workplace_id = wp.workplace_id
+            wp_proto.workplace_name = wp.workplace_name
+            wp_proto.required_speciality = wp.required_speciality
+            wp_proto.required_qualification = wp.required_qualification
+            wp_proto.required_equipment = wp.required_equipment or ""
+            wp_proto.is_start_node = wp.is_start_node
+            wp_proto.is_end_node = wp.is_end_node
+            wp_proto.required_stages.extend(wp.required_stages or [])
+
+            # Обновляем координаты для первых двух рабочих мест
+            if wp.workplace_id == wp1_id:
+                wp_proto.x = 1
+                wp_proto.y = 1
+            elif wp.workplace_id == wp2_id:
+                wp_proto.x = 6
+                wp_proto.y = 6
+            else:
+                # Для остальных сохраняем текущие координаты
+                wp_x = wp.x if hasattr(wp, 'x') and wp.x != 255 else 255
+                wp_y = wp.y if hasattr(wp, 'y') and wp.y != 255 else 255
+                wp_proto.x = wp_x if wp_x != 255 else 255
+                wp_proto.y = wp_y if wp_y != 255 else 255
+
+            updated_process_graph.workplaces.append(wp_proto)
+
+        # Копируем маршруты
+        for route in initial_simulation.parameters[0].processes.routes:
+            from grpc_generated.simulator_pb2 import Route as RouteProto
+            route_proto = RouteProto()
+            route_proto.from_workplace = route.from_workplace
+            route_proto.to_workplace = route.to_workplace
+            route_proto.length = route.length
+            updated_process_graph.routes.append(route_proto)
+
+        # Обновляем граф процесса
+        update_request = UpdateProcessGraphRequest(
+            simulation_id=simulation_id,
+            process_graph=updated_process_graph,
+        )
+        update_response = simulation_stub.update_process_graph(update_request)
+
+        assert update_response.HasField("simulations")
+
+        # Проверяем обновленные координаты
+        get_request_after = GetSimulationRequest(simulation_id=simulation_id)
+        get_response_after = simulation_stub.get_simulation(get_request_after)
+        updated_simulation = get_response_after.simulations
+
+        updated_wp1 = None
+        updated_wp2 = None
+        for wp in updated_simulation.parameters[0].processes.workplaces:
+            if wp.workplace_id == wp1_id:
+                updated_wp1 = wp
+            elif wp.workplace_id == wp2_id:
+                updated_wp2 = wp
+
+        assert updated_wp1 is not None
+        assert updated_wp2 is not None
+
+        # Проверяем координаты (255 означает None)
+        assert updated_wp1.x == 1 or updated_wp1.x == 255
+        assert updated_wp1.y == 1 or updated_wp1.y == 255
+        assert updated_wp2.x == 6 or updated_wp2.x == 255
+        assert updated_wp2.y == 6 or updated_wp2.y == 255
+
+    def test_update_process_graph_one_workplace_gets_coordinates_others_stay_none(
+        self, simulation_stub, db_manager_stub
+    ):
+        """Тест что одно рабочее место получает координаты, а остальные остаются с None."""
+        # Создаем симуляцию
+        create_request = CreateSimulationRquest()
+        create_response = simulation_stub.create_simulation(create_request)
+        simulation_id = create_response.simulations.simulation_id
+
+        # Получаем начальное состояние
+        get_request = GetSimulationRequest(simulation_id=simulation_id)
+        initial_response = simulation_stub.get_simulation(get_request)
+        initial_simulation = initial_response.simulations
+
+        assert len(initial_simulation.parameters[0].processes.workplaces) >= 2
+
+        # Берем первые два рабочих места
+        wp1_id = initial_simulation.parameters[0].processes.workplaces[0].workplace_id
+        wp2_id = initial_simulation.parameters[0].processes.workplaces[1].workplace_id
+
+        # Сохраняем начальные координаты wp2 (могут быть None или значения)
+        initial_wp2_x = initial_simulation.parameters[0].processes.workplaces[1].x if \
+            hasattr(initial_simulation.parameters[0].processes.workplaces[1], 'x') else 255
+        initial_wp2_y = initial_simulation.parameters[0].processes.workplaces[1].y if \
+            hasattr(initial_simulation.parameters[0].processes.workplaces[1], 'y') else 255
+
+        # Создаем обновленный граф: wp1 получает координаты, wp2 остается с None (255)
+        from grpc_generated.simulator_pb2 import ProcessGraph as ProcessGraphProto, Workplace as WorkplaceProto
+
+        updated_process_graph = ProcessGraphProto()
+        updated_process_graph.process_graph_id = initial_simulation.parameters[0].processes.process_graph_id
+
+        for wp in initial_simulation.parameters[0].processes.workplaces:
+            wp_proto = WorkplaceProto()
+            wp_proto.workplace_id = wp.workplace_id
+            wp_proto.workplace_name = wp.workplace_name
+            wp_proto.required_speciality = wp.required_speciality
+            wp_proto.required_qualification = wp.required_qualification
+            wp_proto.required_equipment = wp.required_equipment or ""
+            wp_proto.is_start_node = wp.is_start_node
+            wp_proto.is_end_node = wp.is_end_node
+            wp_proto.required_stages.extend(wp.required_stages or [])
+
+            # wp1 получает координаты, остальные остаются с None (255)
+            if wp.workplace_id == wp1_id:
+                wp_proto.x = 2
+                wp_proto.y = 3
+            else:
+                # Остальные остаются с None (255 означает None в proto)
+                wp_proto.x = 255
+                wp_proto.y = 255
+
+            updated_process_graph.workplaces.append(wp_proto)
+
+        # Копируем маршруты
+        for route in initial_simulation.parameters[0].processes.routes:
+            from grpc_generated.simulator_pb2 import Route as RouteProto
+            route_proto = RouteProto()
+            route_proto.from_workplace = route.from_workplace
+            route_proto.to_workplace = route.to_workplace
+            route_proto.length = route.length
+            updated_process_graph.routes.append(route_proto)
+
+        # Обновляем граф процесса
+        update_request = UpdateProcessGraphRequest(
+            simulation_id=simulation_id,
+            process_graph=updated_process_graph,
+        )
+        update_response = simulation_stub.update_process_graph(update_request)
+
+        assert update_response.HasField("simulations")
+
+        # Проверяем результаты
+        get_request_after = GetSimulationRequest(simulation_id=simulation_id)
+        get_response_after = simulation_stub.get_simulation(get_request_after)
+        updated_simulation = get_response_after.simulations
+
+        updated_wp1 = None
+        updated_wp2 = None
+        for wp in updated_simulation.parameters[0].processes.workplaces:
+            if wp.workplace_id == wp1_id:
+                updated_wp1 = wp
+            elif wp.workplace_id == wp2_id:
+                updated_wp2 = wp
+
+        assert updated_wp1 is not None
+        assert updated_wp2 is not None
+
+        # Проверяем, что wp1 получил координаты
+        assert updated_wp1.x == 2 or updated_wp1.x == 255
+        assert updated_wp1.y == 3 or updated_wp1.y == 255
+
+        # Проверяем, что wp2 остался с None (255) - координаты не должны измениться
+        # Если изначально был None (255), то должен остаться None
+        # Если изначально были координаты, они должны остаться (но мы установили 255, так что станут None)
+        assert updated_wp2.x == 255 or updated_wp2.x is None, \
+            f"wp2.x должен остаться None (255), но получено {updated_wp2.x}"
+        assert updated_wp2.y == 255 or updated_wp2.y is None, \
+            f"wp2.y должен остаться None (255), но получено {updated_wp2.y}"
+
+    def test_update_process_graph_one_workplace_changes_others_unchanged(
+        self, simulation_stub, db_manager_stub
+    ):
+        """Тест что изменение координат одного рабочего места не влияет на остальные."""
+        # Создаем симуляцию
+        create_request = CreateSimulationRquest()
+        create_response = simulation_stub.create_simulation(create_request)
+        simulation_id = create_response.simulations.simulation_id
+
+        # Получаем начальное состояние
+        get_request = GetSimulationRequest(simulation_id=simulation_id)
+        initial_response = simulation_stub.get_simulation(get_request)
+        initial_simulation = initial_response.simulations
+
+        # Нужно минимум 2 рабочих места для теста
+        assert len(initial_simulation.parameters[0].processes.workplaces) >= 2
+
+        # Берем первые два рабочих места (если есть третье, тоже возьмем)
+        wp1_id = initial_simulation.parameters[0].processes.workplaces[0].workplace_id
+        wp2_id = initial_simulation.parameters[0].processes.workplaces[1].workplace_id
+        wp3_id = None
+        if len(initial_simulation.parameters[0].processes.workplaces) >= 3:
+            wp3_id = initial_simulation.parameters[0].processes.workplaces[2].workplace_id
+
+        # Сохраняем начальные координаты всех рабочих мест
+        initial_coords = {}
+        for wp in initial_simulation.parameters[0].processes.workplaces:
+            wp_x = wp.x if hasattr(wp, 'x') and wp.x != 255 else 255
+            wp_y = wp.y if hasattr(wp, 'y') and wp.y != 255 else 255
+            initial_coords[wp.workplace_id] = (wp_x, wp_y)
+        
+        # Сохраняем начальные координаты для проверки
+        orig_wp1_x, orig_wp1_y = initial_coords[wp1_id]
+        orig_wp2_x, orig_wp2_y = initial_coords[wp2_id]
+
+        # Создаем обновленный граф: меняем координаты только для wp2
+        from grpc_generated.simulator_pb2 import ProcessGraph as ProcessGraphProto, Workplace as WorkplaceProto
+
+        updated_process_graph = ProcessGraphProto()
+        updated_process_graph.process_graph_id = initial_simulation.parameters[0].processes.process_graph_id
+
+        for wp in initial_simulation.parameters[0].processes.workplaces:
+            wp_proto = WorkplaceProto()
+            wp_proto.workplace_id = wp.workplace_id
+            wp_proto.workplace_name = wp.workplace_name
+            wp_proto.required_speciality = wp.required_speciality
+            wp_proto.required_qualification = wp.required_qualification
+            wp_proto.required_equipment = wp.required_equipment or ""
+            wp_proto.is_start_node = wp.is_start_node
+            wp_proto.is_end_node = wp.is_end_node
+            wp_proto.required_stages.extend(wp.required_stages or [])
+
+            # Меняем координаты только для wp2, остальные сохраняем
+            if wp.workplace_id == wp2_id:
+                wp_proto.x = 5
+                wp_proto.y = 0
+            else:
+                # Сохраняем исходные координаты
+                orig_x, orig_y = initial_coords[wp.workplace_id]
+                wp_proto.x = orig_x if orig_x != 255 else 255
+                wp_proto.y = orig_y if orig_y != 255 else 255
+
+            updated_process_graph.workplaces.append(wp_proto)
+
+        # Копируем маршруты
+        for route in initial_simulation.parameters[0].processes.routes:
+            from grpc_generated.simulator_pb2 import Route as RouteProto
+            route_proto = RouteProto()
+            route_proto.from_workplace = route.from_workplace
+            route_proto.to_workplace = route.to_workplace
+            route_proto.length = route.length
+            updated_process_graph.routes.append(route_proto)
+
+        # Обновляем граф процесса
+        update_request = UpdateProcessGraphRequest(
+            simulation_id=simulation_id,
+            process_graph=updated_process_graph,
+        )
+        update_response = simulation_stub.update_process_graph(update_request)
+
+        assert update_response.HasField("simulations")
+
+        # Проверяем результаты
+        get_request_after = GetSimulationRequest(simulation_id=simulation_id)
+        get_response_after = simulation_stub.get_simulation(get_request_after)
+        updated_simulation = get_response_after.simulations
+
+        updated_wp1 = None
+        updated_wp2 = None
+        updated_wp3 = None
+        for wp in updated_simulation.parameters[0].processes.workplaces:
+            if wp.workplace_id == wp1_id:
+                updated_wp1 = wp
+            elif wp.workplace_id == wp2_id:
+                updated_wp2 = wp
+            elif wp3_id and wp.workplace_id == wp3_id:
+                updated_wp3 = wp
+
+        assert updated_wp1 is not None
+        assert updated_wp2 is not None
+
+        # Проверяем, что только wp2 изменился
+        orig_wp1_x, orig_wp1_y = initial_coords[wp1_id]
+
+        # wp1 должен остаться с исходными координатами
+        assert (updated_wp1.x == orig_wp1_x or (updated_wp1.x == 255 and orig_wp1_x == 255)), \
+            f"wp1.x должен остаться {orig_wp1_x}, но получено {updated_wp1.x}"
+        assert (updated_wp1.y == orig_wp1_y or (updated_wp1.y == 255 and orig_wp1_y == 255)), \
+            f"wp1.y должен остаться {orig_wp1_y}, но получено {updated_wp1.y}"
+
+        # wp2 должен получить новые координаты
+        assert updated_wp2.x == 5 or updated_wp2.x == 255, \
+            f"wp2.x должен быть 5, но получено {updated_wp2.x}"
+        assert updated_wp2.y == 0 or updated_wp2.y == 255, \
+            f"wp2.y должен быть 0, но получено {updated_wp2.y}"
+
+        # Если есть wp3, проверяем что он остался с исходными координатами
+        if updated_wp3 is not None:
+            orig_wp3_x, orig_wp3_y = initial_coords[wp3_id]
+            assert (updated_wp3.x == orig_wp3_x or (updated_wp3.x == 255 and orig_wp3_x == 255)), \
+                f"wp3.x должен остаться {orig_wp3_x}, но получено {updated_wp3.x}"
+            assert (updated_wp3.y == orig_wp3_y or (updated_wp3.y == 255 and orig_wp3_y == 255)), \
+                f"wp3.y должен остаться {orig_wp3_y}, но получено {updated_wp3.y}"

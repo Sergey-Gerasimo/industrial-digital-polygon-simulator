@@ -3,7 +3,7 @@ from typing import List, Optional
 from uuid import UUID as PyUUID, uuid4
 from sqlalchemy.dialects.postgresql import UUID as SAUUID, JSONB as SAJSONB
 
-from sqlalchemy import ARRAY, String, Enum as SQLEnum, ForeignKey, BigInteger
+from sqlalchemy import ARRAY, String, Enum as SQLEnum, ForeignKey, BigInteger, Integer
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -123,6 +123,8 @@ class Workplace(Base):
     next_workplace_ids: Mapped[List[PyUUID]] = mapped_column(
         ARRAY(SAUUID(as_uuid=True)), nullable=False, default=list
     )
+    x: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)  # координата X на площадке 7x7 (0-6), null если не установлена
+    y: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)  # координата Y на площадке 7x7 (0-6), null если не установлена
     created_at: Mapped[datetime] = mapped_column(
         default=get_current_time, nullable=False
     )

@@ -22,6 +22,12 @@ class Workplace(RedisSerializable):
     is_start_node: bool = field(default=False)
     is_end_node: bool = field(default=False)
     next_workplace_ids: List[str] = field(default_factory=list)
+    x: Optional[int] = field(
+        default=None
+    )  # координата X на площадке 7x7 (0-6), null если не установлена
+    y: Optional[int] = field(
+        default=None
+    )  # координата Y на площадке 7x7 (0-6), null если не установлена
 
     def __eq__(self, other):
         """Сравнение по workplace_id."""

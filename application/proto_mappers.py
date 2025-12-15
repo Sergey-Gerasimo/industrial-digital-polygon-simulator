@@ -262,6 +262,14 @@ def domain_workplace_to_proto(domain: Workplace) -> WorkplaceProto:
     proto.is_end_node = domain.is_end_node
     proto.next_workplace_ids.extend(domain.next_workplace_ids or [])
 
+    # Преобразуем координаты
+    # Если None, используем 255 как sentinel значение "не установлено"
+    # (координаты на сетке 7x7 это 0-6, поэтому 255 вне диапазона и безопасно использовать)
+    domain_x = getattr(domain, "x", None)
+    domain_y = getattr(domain, "y", None)
+    proto.x = domain_x if domain_x is not None else 255  # 255 = "не установлено"
+    proto.y = domain_y if domain_y is not None else 255  # 255 = "не установлено"
+
     return proto
 
 
@@ -296,6 +304,10 @@ def proto_workplace_to_domain(proto: WorkplaceProto) -> Workplace:
         is_start_node=proto.is_start_node,
         is_end_node=proto.is_end_node,
         next_workplace_ids=list(proto.next_workplace_ids),
+        x=(
+            proto.x if proto.x != 255 else None
+        ),  # 255 в proto означает None (не установлено)
+        y=proto.y if proto.y != 255 else None,
     )
 
 
@@ -640,7 +652,7 @@ def domain_simulation_parameters_to_proto(
         domain.distribution_strategy.value
         if hasattr(domain.distribution_strategy, "value")
         else domain.distribution_strategy
-        )
+    )
 
     # Преобразуем дополнительные поля
     proto.step = domain.step

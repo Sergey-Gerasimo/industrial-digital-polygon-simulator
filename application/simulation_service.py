@@ -273,6 +273,8 @@ class SimulationServiceImpl(SimulationServiceServicer):
                     room_id=room_id,
                 )
 
+                logger.info(f"Simulation created: {simulation}")
+
                 saved = await self._save_simulation(session, simulation, context)
 
                 if saved is None:

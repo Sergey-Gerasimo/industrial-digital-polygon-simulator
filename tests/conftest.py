@@ -286,6 +286,7 @@ async def populate_test_data():
                 required_equipment="",
                 is_start_node=True,
                 is_end_node=False,
+                # x и y по умолчанию None
             )
             try:
                 await workplace_repo.save(workplace1)
@@ -302,6 +303,7 @@ async def populate_test_data():
                 required_equipment="",
                 is_start_node=False,
                 is_end_node=True,
+                # x и y по умолчанию None
             )
             try:
                 await workplace_repo.save(workplace2)

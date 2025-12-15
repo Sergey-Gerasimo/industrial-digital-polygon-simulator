@@ -129,7 +129,7 @@ class Equipment(_message.Message):
     def __init__(self, equipment_id: _Optional[str] = ..., name: _Optional[str] = ..., equipment_type: _Optional[str] = ..., reliability: _Optional[float] = ..., maintenance_period: _Optional[int] = ..., maintenance_cost: _Optional[int] = ..., cost: _Optional[int] = ..., repair_cost: _Optional[int] = ..., repair_time: _Optional[int] = ...) -> None: ...
 
 class Workplace(_message.Message):
-    __slots__ = ("workplace_id", "workplace_name", "required_speciality", "required_qualification", "required_equipment", "worker", "equipment", "required_stages", "is_start_node", "is_end_node", "next_workplace_ids")
+    __slots__ = ("workplace_id", "workplace_name", "required_speciality", "required_qualification", "required_equipment", "worker", "equipment", "required_stages", "is_start_node", "is_end_node", "next_workplace_ids", "x", "y")
     WORKPLACE_ID_FIELD_NUMBER: _ClassVar[int]
     WORKPLACE_NAME_FIELD_NUMBER: _ClassVar[int]
     REQUIRED_SPECIALITY_FIELD_NUMBER: _ClassVar[int]
@@ -141,6 +141,8 @@ class Workplace(_message.Message):
     IS_START_NODE_FIELD_NUMBER: _ClassVar[int]
     IS_END_NODE_FIELD_NUMBER: _ClassVar[int]
     NEXT_WORKPLACE_IDS_FIELD_NUMBER: _ClassVar[int]
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
     workplace_id: str
     workplace_name: str
     required_speciality: str
@@ -152,7 +154,9 @@ class Workplace(_message.Message):
     is_start_node: bool
     is_end_node: bool
     next_workplace_ids: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, workplace_id: _Optional[str] = ..., workplace_name: _Optional[str] = ..., required_speciality: _Optional[str] = ..., required_qualification: _Optional[int] = ..., required_equipment: _Optional[str] = ..., worker: _Optional[_Union[Worker, _Mapping]] = ..., equipment: _Optional[_Union[Equipment, _Mapping]] = ..., required_stages: _Optional[_Iterable[str]] = ..., is_start_node: bool = ..., is_end_node: bool = ..., next_workplace_ids: _Optional[_Iterable[str]] = ...) -> None: ...
+    x: int
+    y: int
+    def __init__(self, workplace_id: _Optional[str] = ..., workplace_name: _Optional[str] = ..., required_speciality: _Optional[str] = ..., required_qualification: _Optional[int] = ..., required_equipment: _Optional[str] = ..., worker: _Optional[_Union[Worker, _Mapping]] = ..., equipment: _Optional[_Union[Equipment, _Mapping]] = ..., required_stages: _Optional[_Iterable[str]] = ..., is_start_node: bool = ..., is_end_node: bool = ..., next_workplace_ids: _Optional[_Iterable[str]] = ..., x: _Optional[int] = ..., y: _Optional[int] = ...) -> None: ...
 
 class Route(_message.Message):
     __slots__ = ("length", "from_workplace", "to_workplace")

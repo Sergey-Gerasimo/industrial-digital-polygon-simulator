@@ -436,3 +436,117 @@ class TestWorkplace:
 
         workplace_large = Workplace(required_qualification=100)
         assert workplace_large.required_qualification == 100
+
+    def test_workplace_coordinates_default_none(self):
+        """Тест что координаты по умолчанию None."""
+        workplace = Workplace()
+
+        assert workplace.x is None
+        assert workplace.y is None
+
+    def test_workplace_coordinates_set_values(self):
+        """Тест установки координат на площадке 7x7."""
+        workplace = Workplace(
+            workplace_id="wp_coords_001",
+            workplace_name="Рабочее место с координатами",
+            x=3,
+            y=4,
+        )
+
+        assert workplace.x == 3
+        assert workplace.y == 4
+
+    def test_workplace_coordinates_all_positions(self):
+        """Тест установки координат для всех позиций сетки 7x7."""
+        # Тестируем углы сетки
+        workplace_top_left = Workplace(x=0, y=0)
+        assert workplace_top_left.x == 0
+        assert workplace_top_left.y == 0
+
+        workplace_top_right = Workplace(x=6, y=0)
+        assert workplace_top_right.x == 6
+        assert workplace_top_right.y == 0
+
+        workplace_bottom_left = Workplace(x=0, y=6)
+        assert workplace_bottom_left.x == 0
+        assert workplace_bottom_left.y == 6
+
+        workplace_bottom_right = Workplace(x=6, y=6)
+        assert workplace_bottom_right.x == 6
+        assert workplace_bottom_right.y == 6
+
+        # Тестируем центр
+        workplace_center = Workplace(x=3, y=3)
+        assert workplace_center.x == 3
+        assert workplace_center.y == 3
+
+    def test_workplace_coordinates_update(self):
+        """Тест изменения координат после создания."""
+        workplace = Workplace()
+
+        assert workplace.x is None
+        assert workplace.y is None
+
+        # Устанавливаем координаты
+        workplace.x = 2
+        workplace.y = 5
+
+        assert workplace.x == 2
+        assert workplace.y == 5
+
+        # Меняем координаты
+        workplace.x = 1
+        workplace.y = 1
+
+        assert workplace.x == 1
+        assert workplace.y == 1
+
+        # Устанавливаем в None
+        workplace.x = None
+        workplace.y = None
+
+        assert workplace.x is None
+        assert workplace.y is None
+
+    def test_workplace_coordinates_in_redis_dict(self):
+        """Тест что координаты сохраняются в словарь для Redis."""
+        workplace_with_coords = Workplace(
+            workplace_id="wp_redis_coords",
+            workplace_name="Рабочее место",
+            x=2,
+            y=3,
+        )
+
+        result = workplace_with_coords.to_redis_dict()
+
+        assert result["x"] == 2
+        assert result["y"] == 3
+
+        # Тест с None координатами
+        workplace_without_coords = Workplace(
+            workplace_id="wp_redis_no_coords",
+            workplace_name="Рабочее место без координат",
+        )
+
+        result_none = workplace_without_coords.to_redis_dict()
+        assert result_none.get("x") is None
+        assert result_none.get("y") is None
+
+    def test_workplace_coordinates_combined_with_other_fields(self):
+        """Тест координат в комбинации с другими полями."""
+        workplace = Workplace(
+            workplace_id="wp_combined",
+            workplace_name="Комплексное рабочее место",
+            required_speciality="Слесарь-сборщик",
+            required_qualification=5,
+            is_start_node=True,
+            x=4,
+            y=2,
+        )
+
+        assert workplace.workplace_id == "wp_combined"
+        assert workplace.workplace_name == "Комплексное рабочее место"
+        assert workplace.required_qualification == 5
+        assert workplace.is_start_node is True
+        assert workplace.x == 4
+        assert workplace.y == 2

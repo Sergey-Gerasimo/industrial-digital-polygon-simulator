@@ -349,8 +349,9 @@ class SimulationParameters(RedisSerializable):
     def set_process_graph(self, process_graph: ProcessGraph) -> None:
         """Устанавливает граф процесса, сохраняя существующие рабочие места.
 
-        Сохраняет существующие рабочие места (процессы неизменны), добавляет только новые
-        пути (routes) между рабочими местами из нового графа, если их еще нет.
+        Сохраняет существующие рабочие места (процессы неизменны), обновляет координаты
+        существующих рабочих мест и добавляет только новые пути (routes) между рабочими
+        местами из нового графа, если их еще нет.
 
         Args:
             process_graph: Новый граф процесса
@@ -379,7 +380,18 @@ class SimulationParameters(RedisSerializable):
         if process_graph.process_graph_id:
             self.processes.process_graph_id = process_graph.process_graph_id
 
-        # Рабочие места остаются неизменными (процессы неизменны)
+        # Обновляем координаты существующих рабочих мест
+        # Создаем словарь новых рабочих мест по ID для быстрого доступа
+        new_workplaces_by_id = {wp.workplace_id: wp for wp in process_graph.workplaces}
+        
+        # Обновляем координаты существующих рабочих мест
+        for existing_wp in self.processes.workplaces:
+            if existing_wp.workplace_id in new_workplaces_by_id:
+                new_wp = new_workplaces_by_id[existing_wp.workplace_id]
+                # Обновляем координаты, если они указаны в новом графе
+                existing_wp.x = new_wp.x
+                existing_wp.y = new_wp.y
+
         # Добавляем только новые пути между существующими рабочими местами
         for new_route in process_graph.routes:
             # Проверяем, существует ли уже такой путь

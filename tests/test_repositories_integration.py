@@ -774,6 +774,179 @@ class TestWorkplaceRepository:
         assert workplace1.workplace_id in ids
         assert workplace2.workplace_id in ids
 
+    @pytest.mark.asyncio
+    async def test_save_workplace_with_coordinates(self, workplace_repo):
+        """Тест сохранения Workplace с координатами."""
+        workplace = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Workplace with coordinates",
+            required_speciality=Specialization.ASSEMBLER.value,
+            required_qualification=Qualification.III.value,
+            x=2,
+            y=3,
+        )
+
+        saved = await workplace_repo.save(workplace)
+        assert saved is not None
+        assert saved.x == 2
+        assert saved.y == 3
+
+    @pytest.mark.asyncio
+    async def test_save_workplace_without_coordinates(self, workplace_repo):
+        """Тест сохранения Workplace без координат (None)."""
+        workplace = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Workplace without coordinates",
+            required_speciality=Specialization.ENGINEER_TECHNOLOGIST.value,
+            required_qualification=Qualification.IV.value,
+            # x и y не указаны, должны быть None
+        )
+
+        saved = await workplace_repo.save(workplace)
+        assert saved is not None
+        assert saved.x is None
+        assert saved.y is None
+
+    @pytest.mark.asyncio
+    async def test_get_workplace_with_coordinates(self, workplace_repo):
+        """Тест получения Workplace с координатами из БД."""
+        workplace = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Workplace to retrieve",
+            required_speciality=Specialization.QUALITY_CONTROLLER.value,
+            required_qualification=Qualification.V.value,
+            x=5,
+            y=1,
+        )
+
+        saved = await workplace_repo.save(workplace)
+        retrieved = await workplace_repo.get(saved.workplace_id)
+
+        assert retrieved is not None
+        assert retrieved.workplace_id == workplace.workplace_id
+        assert retrieved.x == 5
+        assert retrieved.y == 1
+
+    @pytest.mark.asyncio
+    async def test_update_workplace_coordinates(self, workplace_repo):
+        """Тест обновления координат Workplace."""
+        # Создаем рабочее место без координат
+        workplace = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Workplace to update",
+            required_speciality=Specialization.WAREHOUSE_KEEPER.value,
+            required_qualification=Qualification.II.value,
+        )
+
+        saved = await workplace_repo.save(workplace)
+        assert saved.x is None
+        assert saved.y is None
+
+        # Обновляем координаты
+        saved.x = 3
+        saved.y = 4
+
+        updated = await workplace_repo.save(saved)
+        assert updated.x == 3
+        assert updated.y == 4
+
+        # Меняем координаты на другие значения
+        updated.x = 6
+        updated.y = 0
+
+        updated_again = await workplace_repo.save(updated)
+        assert updated_again.x == 6
+        assert updated_again.y == 0
+
+        # Устанавливаем координаты обратно в None
+        updated_again.x = None
+        updated_again.y = None
+
+        updated_none = await workplace_repo.save(updated_again)
+        assert updated_none.x is None
+        assert updated_none.y is None
+
+    @pytest.mark.asyncio
+    async def test_workplace_coordinates_edge_values(self, workplace_repo):
+        """Тест граничных значений координат на сетке 7x7."""
+        # Минимальные координаты (0, 0)
+        workplace_min = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Min coordinates",
+            required_speciality=Specialization.ASSEMBLER.value,
+            required_qualification=Qualification.III.value,
+            x=0,
+            y=0,
+        )
+
+        saved_min = await workplace_repo.save(workplace_min)
+        assert saved_min.x == 0
+        assert saved_min.y == 0
+
+        # Максимальные координаты (6, 6)
+        workplace_max = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Max coordinates",
+            required_speciality=Specialization.ENGINEER_TECHNOLOGIST.value,
+            required_qualification=Qualification.IV.value,
+            x=6,
+            y=6,
+        )
+
+        saved_max = await workplace_repo.save(workplace_max)
+        assert saved_max.x == 6
+        assert saved_max.y == 6
+
+        # Центр сетки (3, 3)
+        workplace_center = Workplace(
+            workplace_id=str(uuid4()),
+            workplace_name="Center coordinates",
+            required_speciality=Specialization.QUALITY_CONTROLLER.value,
+            required_qualification=Qualification.V.value,
+            x=3,
+            y=3,
+        )
+
+        saved_center = await workplace_repo.save(workplace_center)
+        assert saved_center.x == 3
+        assert saved_center.y == 3
+
+    @pytest.mark.asyncio
+    async def test_multiple_workplaces_with_different_coordinates(self, workplace_repo):
+        """Тест нескольких рабочих мест с разными координатами."""
+        workplaces = [
+            Workplace(
+                workplace_id=str(uuid4()),
+                workplace_name=f"Workplace {i}",
+                required_speciality=Specialization.ASSEMBLER.value,
+                required_qualification=Qualification.III.value,
+                x=i % 7,
+                y=(i * 2) % 7,
+            )
+            for i in range(5)
+        ]
+
+        saved_workplaces = []
+        for wp in workplaces:
+            saved = await workplace_repo.save(wp)
+            saved_workplaces.append(saved)
+
+        # Проверяем, что координаты сохранены правильно
+        for i, saved in enumerate(saved_workplaces):
+            assert saved.x == i % 7
+            assert saved.y == (i * 2) % 7
+
+        # Получаем все рабочие места и проверяем координаты
+        all_workplaces = await workplace_repo.get_all()
+        saved_ids = {w.workplace_id for w in saved_workplaces}
+
+        for wp in all_workplaces:
+            if wp.workplace_id in saved_ids:
+                # Находим соответствующий сохраненный workplace
+                saved_wp = next(w for w in saved_workplaces if w.workplace_id == wp.workplace_id)
+                assert wp.x == saved_wp.x
+                assert wp.y == saved_wp.y
+
 
 class TestConsumerRepository:
     """Тесты для ConsumerRepository."""

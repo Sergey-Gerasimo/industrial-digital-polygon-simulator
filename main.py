@@ -14,8 +14,18 @@ async def lifespan():
 
     try:
         app_logger.info("Creating tables")
+        await drop_tables(async_engine)
         await create_tables(async_engine)
         app_logger.info("Succseccfull created tables")
+
+        # Создаем тестовые данные
+        from infrastructure.database import AsyncSessionLocal
+        from infrastructure.seed_data import create_test_data
+
+        app_logger.info("Creating test data")
+        async with AsyncSessionLocal() as session:
+            await create_test_data(session)
+        app_logger.info("Test data created successfully")
     except Exception as e:
         app_logger.error(f"Fatal error: {e}")
         raise

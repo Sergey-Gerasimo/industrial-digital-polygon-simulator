@@ -68,7 +68,7 @@ def worker_db_to_domain(db_model: WorkerDB) -> Worker:
     # В БД specialization - это enum Specialization, в домене specialty - строка (значение enum)
     # specialization может быть enum, строкой (имя enum 'ASSEMBLER') или строкой (значение enum 'Слесарь-сборщик')
     from domain import Specialization
-    
+
     if isinstance(db_model.specialization, Specialization):
         specialty_value = db_model.specialization.value
     elif isinstance(db_model.specialization, str):
@@ -124,7 +124,7 @@ def worker_db_to_logist_domain(db_model: WorkerDB):
     # В БД specialization - это enum Specialization, в домене specialty - строка (значение enum)
     # specialization может быть enum, строкой (имя enum 'ASSEMBLER') или строкой (значение enum 'Логист')
     from domain import Specialization
-    
+
     if isinstance(db_model.specialization, Specialization):
         specialty_value = db_model.specialization.value
     elif isinstance(db_model.specialization, str):
@@ -147,7 +147,7 @@ def worker_db_to_logist_domain(db_model: WorkerDB):
     # В БД vehicle_type - это enum VehicleType, в домене - строка (значение enum)
     # vehicle_type может быть enum, строкой (имя enum 'VAN') или строкой (значение enum 'Грузовой фургон')
     from domain import VehicleType
-    
+
     if isinstance(db_model.vehicle_type, VehicleType):
         vehicle_type_value = db_model.vehicle_type.value
     elif isinstance(db_model.vehicle_type, str) and db_model.vehicle_type:
@@ -165,7 +165,9 @@ def worker_db_to_logist_domain(db_model: WorkerDB):
                 # Если не нашли, используем строку как есть
                 vehicle_type_value = str(db_model.vehicle_type or "")
     else:
-        vehicle_type_value = str(db_model.vehicle_type or "") if db_model.vehicle_type else ""
+        vehicle_type_value = (
+            str(db_model.vehicle_type or "") if db_model.vehicle_type else ""
+        )
 
     return Logist(
         worker_id=str(db_model.worker_id) if db_model.worker_id else "",
@@ -422,6 +424,13 @@ async def workplace_db_to_domain(
         required_qualification=qualification_value,
         required_equipment=db_model.required_equipment or "",
         required_stages=db_model.required_stages or [],
+        is_start_node=db_model.is_start_node if hasattr(db_model, 'is_start_node') else False,
+        is_end_node=db_model.is_end_node if hasattr(db_model, 'is_end_node') else False,
+        next_workplace_ids=[
+            str(wp_id) for wp_id in (db_model.next_workplace_ids or [])
+        ],
+        x=db_model.x if hasattr(db_model, 'x') and db_model.x is not None else None,
+        y=db_model.y if hasattr(db_model, 'y') and db_model.y is not None else None,
     )
 
     # worker и equipment устанавливаются только во время симуляции, не хранятся в БД
@@ -469,9 +478,13 @@ def workplace_domain_to_db(
     db_model.required_stages = domain_entity.required_stages or []
 
     # Устанавливаем значения по умолчанию для полей, которых нет в доменной модели
-    db_model.is_start_node = False
-    db_model.is_end_node = False
-    db_model.next_workplace_ids = []
+    db_model.is_start_node = getattr(domain_entity, 'is_start_node', False)
+    db_model.is_end_node = getattr(domain_entity, 'is_end_node', False)
+    db_model.next_workplace_ids = getattr(domain_entity, 'next_workplace_ids', []) or []
+
+    # Сохраняем координаты (None если не установлены)
+    db_model.x = getattr(domain_entity, 'x', None)
+    db_model.y = getattr(domain_entity, 'y', None)
 
     if domain_entity.workplace_id:
         db_model.workplace_id = domain_entity.workplace_id
@@ -597,13 +610,17 @@ class WorkerRepository(AbstractRepository[Worker]):
                         db_model.qualification = existing_row.qualification
                     elif isinstance(existing_row.qualification, int):
                         try:
-                            db_model.qualification = Qualification(existing_row.qualification)
+                            db_model.qualification = Qualification(
+                                existing_row.qualification
+                            )
                         except (ValueError, KeyError):
                             db_model.qualification = Qualification.I
                     elif isinstance(existing_row.qualification, str):
                         # Если это строка, пытаемся найти enum по имени (например 'I', 'II')
                         try:
-                            db_model.qualification = Qualification[existing_row.qualification]
+                            db_model.qualification = Qualification[
+                                existing_row.qualification
+                            ]
                         except (ValueError, KeyError):
                             # Если не нашли по имени, пытаемся как число
                             try:
@@ -619,14 +636,18 @@ class WorkerRepository(AbstractRepository[Worker]):
                         db_model.specialization = existing_row.specialization
                     elif isinstance(existing_row.specialization, str):
                         try:
-                            db_model.specialization = Specialization(existing_row.specialization)
+                            db_model.specialization = Specialization(
+                                existing_row.specialization
+                            )
                         except ValueError:
                             db_model.specialization = Specialization.NONE
                     else:
                         db_model.specialization = Specialization.NONE
                     db_model.salary = existing_row.salary
                     db_model.type = existing_row.type
-                    db_model.speed = existing_row.speed if existing_row.speed is not None else 0
+                    db_model.speed = (
+                        existing_row.speed if existing_row.speed is not None else 0
+                    )
                     # Преобразуем vehicle_type
                     from domain import VehicleType
 
@@ -634,7 +655,9 @@ class WorkerRepository(AbstractRepository[Worker]):
                         db_model.vehicle_type = existing_row.vehicle_type
                     elif existing_row.vehicle_type is not None:
                         try:
-                            db_model.vehicle_type = VehicleType(existing_row.vehicle_type)
+                            db_model.vehicle_type = VehicleType(
+                                existing_row.vehicle_type
+                            )
                         except (ValueError, KeyError):
                             db_model.vehicle_type = VehicleType.NONE
                     else:
@@ -771,7 +794,7 @@ class WorkerRepository(AbstractRepository[Worker]):
                 self.session.add(db_model)
                 await self.session.flush()
                 await self.session.commit()
-                
+
                 # После INSERT используем прямой SQL запрос для получения данных, как после UPDATE
                 # Это гарантирует консистентность и правильное чтение type поля
                 sql_query = text(
@@ -786,8 +809,9 @@ class WorkerRepository(AbstractRepository[Worker]):
                     sql_query, {"worker_id": db_model.worker_id}
                 )
                 inserted_row = result.fetchone()
-                
+
                 if inserted_row:
+
                     class WorkerRow:
                         def __init__(self, row):
                             self.worker_id = row.worker_id
@@ -798,7 +822,7 @@ class WorkerRepository(AbstractRepository[Worker]):
                             self.type = row.type
                             self.speed = row.speed
                             self.vehicle_type = row.vehicle_type
-                    
+
                     db_model = WorkerRow(inserted_row)
                 else:
                     # Если не удалось получить через SQL, используем refresh
@@ -869,7 +893,9 @@ class WorkerRepository(AbstractRepository[Worker]):
                         except (ValueError, KeyError):
                             # Если не нашли по имени, пробуем как число
                             try:
-                                self.qualification = Qualification(int(row.qualification))
+                                self.qualification = Qualification(
+                                    int(row.qualification)
+                                )
                             except (ValueError, KeyError, TypeError):
                                 self.qualification = Qualification.I
                     else:
@@ -895,7 +921,7 @@ class WorkerRepository(AbstractRepository[Worker]):
                     self.salary = row.salary
                     self.type = row.type
                     self.speed = row.speed if row.speed is not None else 0
-                    
+
                     # Преобразуем vehicle_type в Enum
                     # vehicle_type из SQL может быть строкой (имя enum 'VAN') или enum
                     if isinstance(row.vehicle_type, VehicleType):
@@ -973,7 +999,9 @@ class WorkerRepository(AbstractRepository[Worker]):
                         except (ValueError, KeyError):
                             # Если не нашли по имени, пробуем как число
                             try:
-                                self.qualification = Qualification(int(row.qualification))
+                                self.qualification = Qualification(
+                                    int(row.qualification)
+                                )
                             except (ValueError, KeyError, TypeError):
                                 self.qualification = Qualification.I
                     else:
@@ -999,7 +1027,7 @@ class WorkerRepository(AbstractRepository[Worker]):
                     self.salary = row.salary
                     self.type = row.type
                     self.speed = row.speed if row.speed is not None else 0
-                    
+
                     # Преобразуем vehicle_type в Enum
                     # vehicle_type из SQL может быть строкой (имя enum 'VAN') или enum
                     if isinstance(row.vehicle_type, VehicleType):

@@ -351,6 +351,223 @@ class TestSimulationParameters:
         with pytest.raises(ValueError, match="нет в существующем"):
             params.set_process_graph(invalid_graph)
 
+    def test_set_process_graph_updates_coordinates(self):
+        """Тест что set_process_graph обновляет координаты существующих рабочих мест."""
+        params = SimulationParameters()
+        # Создаем рабочие места без координат (None)
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1")
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2")
+        params.processes.workplaces = [wp1, wp2]
+
+        # Проверяем, что изначально координаты None
+        assert wp1.x is None
+        assert wp1.y is None
+        assert wp2.x is None
+        assert wp2.y is None
+
+        # Создаем новый граф с теми же рабочими местами, но с координатами
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=2, y=3)
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=5, y=1)
+        new_graph = ProcessGraph(
+            process_graph_id="updated_graph",
+            workplaces=[new_wp1, new_wp2],
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что координаты обновились
+        assert wp1.x == 2
+        assert wp1.y == 3
+        assert wp2.x == 5
+        assert wp2.y == 1
+
+        # Проверяем, что другие поля не изменились
+        assert wp1.workplace_id == "wp1"
+        assert wp1.workplace_name == "Workplace 1"
+        assert wp2.workplace_id == "wp2"
+        assert wp2.workplace_name == "Workplace 2"
+
+    def test_set_process_graph_updates_coordinates_to_none(self):
+        """Тест что set_process_graph может обновить координаты обратно в None."""
+        params = SimulationParameters()
+        # Создаем рабочие места с координатами
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=2, y=3)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=5, y=1)
+        params.processes.workplaces = [wp1, wp2]
+
+        # Проверяем, что изначально координаты установлены
+        assert wp1.x == 2
+        assert wp1.y == 3
+
+        # Создаем новый граф с теми же рабочими местами, но с None координатами
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=None, y=None)
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=None, y=None)
+        new_graph = ProcessGraph(
+            process_graph_id="updated_graph",
+            workplaces=[new_wp1, new_wp2],
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что координаты обновились на None
+        assert wp1.x is None
+        assert wp1.y is None
+        assert wp2.x is None
+        assert wp2.y is None
+
+    def test_set_process_graph_updates_coordinates_partial(self):
+        """Тест обновления координат для части рабочих мест."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=2, y=2)
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=3, y=3)
+        params.processes.workplaces = [wp1, wp2, wp3]
+
+        # Обновляем координаты только для wp1 и wp2
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=4, y=5)
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=6, y=0)
+        # wp3 не включаем в новый граф (но он должен остаться в существующих)
+        new_graph = ProcessGraph(
+            process_graph_id="partial_update",
+            workplaces=[new_wp1, new_wp2],  # только 2 из 3
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что координаты wp1 и wp2 обновились
+        assert wp1.x == 4
+        assert wp1.y == 5
+        assert wp2.x == 6
+        assert wp2.y == 0
+
+        # wp3 должен остаться с прежними координатами (но его нет в новом графе,
+        # поэтому метод вызовет ошибку, так как все рабочие места из нового графа
+        # должны существовать в старом)
+        # На самом деле, метод проверяет что все новые рабочие места есть в существующих,
+        # но не требует что все существующие есть в новых
+        # Но в данном случае мы передаем только часть, поэтому всё должно быть ок
+        # wp3 должен остаться с теми же координатами
+        assert wp3.x == 3
+        assert wp3.y == 3
+
+    def test_set_process_graph_updates_only_specified_workplace_coordinates(self):
+        """Тест что обновление координат одного рабочего места не влияет на остальные."""
+        params = SimulationParameters()
+        # Создаем несколько рабочих мест с разными координатами
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=2, y=2)
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=None, y=None)
+        wp4 = Workplace(workplace_id="wp4", workplace_name="Workplace 4", x=4, y=4)
+        params.processes.workplaces = [wp1, wp2, wp3, wp4]
+
+        # Сохраняем исходные координаты для проверки
+        original_coords = {
+            "wp1": (wp1.x, wp1.y),
+            "wp2": (wp2.x, wp2.y),
+            "wp3": (wp3.x, wp3.y),
+            "wp4": (wp4.x, wp4.y),
+        }
+
+        # Обновляем координаты только для wp2
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1)  # те же координаты
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=5, y=6)  # новые координаты
+        new_wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=None, y=None)  # остаются None
+        new_wp4 = Workplace(workplace_id="wp4", workplace_name="Workplace 4", x=4, y=4)  # те же координаты
+        new_graph = ProcessGraph(
+            process_graph_id="selective_update",
+            workplaces=[new_wp1, new_wp2, new_wp3, new_wp4],
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что только wp2 изменился
+        assert wp1.x == 1, "wp1.x не должен измениться"
+        assert wp1.y == 1, "wp1.y не должен измениться"
+        assert wp2.x == 5, "wp2.x должен обновиться"
+        assert wp2.y == 6, "wp2.y должен обновиться"
+        assert wp3.x is None, "wp3.x должен остаться None"
+        assert wp3.y is None, "wp3.y должен остаться None"
+        assert wp4.x == 4, "wp4.x не должен измениться"
+        assert wp4.y == 4, "wp4.y не должен измениться"
+
+    def test_set_process_graph_one_workplace_gets_coordinates_others_stay_none(self):
+        """Тест что одно рабочее место получает координаты, а остальные остаются с None."""
+        params = SimulationParameters()
+        # Создаем несколько рабочих мест все с None координатами
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=None, y=None)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=None, y=None)
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=None, y=None)
+        params.processes.workplaces = [wp1, wp2, wp3]
+
+        # Проверяем, что все изначально None
+        assert wp1.x is None
+        assert wp1.y is None
+        assert wp2.x is None
+        assert wp2.y is None
+        assert wp3.x is None
+        assert wp3.y is None
+
+        # Обновляем координаты только для wp2, остальные остаются None
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=None, y=None)
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=3, y=4)  # получает координаты
+        new_wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=None, y=None)
+        new_graph = ProcessGraph(
+            process_graph_id="one_gets_coords",
+            workplaces=[new_wp1, new_wp2, new_wp3],
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что только wp2 получил координаты, остальные остались None
+        assert wp1.x is None, "wp1.x должен остаться None"
+        assert wp1.y is None, "wp1.y должен остаться None"
+        assert wp2.x == 3, "wp2.x должен получить координату 3"
+        assert wp2.y == 4, "wp2.y должен получить координату 4"
+        assert wp3.x is None, "wp3.x должен остаться None"
+        assert wp3.y is None, "wp3.y должен остаться None"
+
+    def test_set_process_graph_one_workplace_loses_coordinates_others_keep(self):
+        """Тест что одно рабочее место теряет координаты (становится None), а остальные сохраняют."""
+        params = SimulationParameters()
+        # Создаем несколько рабочих мест все с координатами
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=2, y=2)
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=3, y=3)
+        params.processes.workplaces = [wp1, wp2, wp3]
+
+        # Проверяем, что все изначально имеют координаты
+        assert wp1.x == 1
+        assert wp1.y == 1
+        assert wp2.x == 2
+        assert wp2.y == 2
+        assert wp3.x == 3
+        assert wp3.y == 3
+
+        # Обновляем: wp2 теряет координаты (становится None), остальные сохраняют
+        new_wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1)  # сохраняет
+        new_wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=None, y=None)  # теряет координаты
+        new_wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3", x=3, y=3)  # сохраняет
+        new_graph = ProcessGraph(
+            process_graph_id="one_loses_coords",
+            workplaces=[new_wp1, new_wp2, new_wp3],
+            routes=[],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что только wp2 потерял координаты, остальные сохранили
+        assert wp1.x == 1, "wp1.x должен сохраниться"
+        assert wp1.y == 1, "wp1.y должен сохраниться"
+        assert wp2.x is None, "wp2.x должен стать None"
+        assert wp2.y is None, "wp2.y должен стать None"
+        assert wp3.x == 3, "wp3.x должен сохраниться"
+        assert wp3.y == 3, "wp3.y должен сохраниться"
+
     def test_set_production_plan_row(self):
         """Тест обновления строки производственного плана."""
         params = SimulationParameters()
