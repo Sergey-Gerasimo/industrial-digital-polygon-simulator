@@ -15,6 +15,7 @@ services:
 
     environment:
       - LOG_LEVEL=DEBUG
+      - DEBUG=true
       - POSTGRES_HOST=db
       - POSTGRES_DB=auth_db
       - POSTGRES_USER=user
