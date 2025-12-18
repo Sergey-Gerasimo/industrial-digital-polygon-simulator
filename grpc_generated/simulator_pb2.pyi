@@ -1167,10 +1167,12 @@ class GetAllWorkplacesResponse(_message.Message):
     def __init__(self, workplaces: _Optional[_Iterable[_Union[Workplace, _Mapping]]] = ..., total_count: _Optional[int] = ...) -> None: ...
 
 class GetProcessGraphRequest(_message.Message):
-    __slots__ = ("process_graph_id",)
-    PROCESS_GRAPH_ID_FIELD_NUMBER: _ClassVar[int]
-    process_graph_id: str
-    def __init__(self, process_graph_id: _Optional[str] = ...) -> None: ...
+    __slots__ = ("simulation_id", "step")
+    SIMULATION_ID_FIELD_NUMBER: _ClassVar[int]
+    STEP_FIELD_NUMBER: _ClassVar[int]
+    simulation_id: str
+    step: int
+    def __init__(self, simulation_id: _Optional[str] = ..., step: _Optional[int] = ...) -> None: ...
 
 class CreateConsumerRequest(_message.Message):
     __slots__ = ("name", "type")

@@ -95,7 +95,7 @@ async def create_default_simulation_parameters(
         processes=processes,
         tenders=list(),
         dealing_with_defects=DealingWithDefects.NONE,
-        production_improvements=list(),
+        production_improvements=lean_improvements,  # Используем lean_improvements как production_improvements
         sales_strategy=SaleStrategest.NONE,
         production_schedule=ProductionSchedule(),
         certifications=certifications,
