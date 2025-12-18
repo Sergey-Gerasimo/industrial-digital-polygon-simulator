@@ -70,8 +70,8 @@ message Workplace {
     bool is_start_node = 9;      // является начальным узлом (поставщик)
     bool is_end_node = 10;        // является конечным узлом (потребитель)
     repeated string next_workplace_ids = 11; // следующие рабочие места
-    uint32 x = 12;                // координата X на площадке 7x7 (0-6)
-    uint32 y = 13;                // координата Y на площадке 7x7 (0-6)
+    optional uint32 x = 12;                // координата X на площадке 7x7 (0-6)
+    optional uint32 y = 13;                // координата Y на площадке 7x7 (0-6)
 }
 
 message Route {
@@ -720,7 +720,8 @@ message GetAllWorkplacesResponse{
 }
 
 message GetProcessGraphRequest{
-    string process_graph_id = 1;
+    string simulation_id = 1;
+    int32 step = 2;
 }
 
 message CreateConsumerRequest{
