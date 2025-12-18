@@ -10,6 +10,7 @@ import uuid
 
 from grpc_generated.simulator_pb2 import (
     # Supplier
+    CreateSimulationRquest,
     CreateSupplierRequest,
     UpdateSupplierRequest,
     DeleteSupplierRequest,
@@ -72,6 +73,18 @@ from domain import (
     VehicleType,
     PaymentForm,
 )
+
+
+@pytest.fixture(scope="function")
+def some_simulation(simulation_stub):
+    request = CreateSimulationRquest()
+    response = simulation_stub.create_simulation(request)
+    return response
+
+
+@pytest.fixture(scope="function")
+def some_simulation_id(some_simulation):
+    return some_simulation.simulations.simulation_id
 
 
 class TestSupplierMethods:
@@ -439,12 +452,12 @@ class TestWorkplaceMethods:
 class TestProcessGraphMethods:
     """Тесты для методов работы с графом процесса."""
 
-    def test_get_process_graph(self, db_manager_stub):
+    def test_get_process_graph(self, db_manager_stub, some_simulation_id):
         """Тест получения графа процесса."""
-        request = GetProcessGraphRequest(process_graph_id="test_graph")
+        request = GetProcessGraphRequest(simulation_id=some_simulation_id, step=1)
         response = db_manager_stub.get_process_graph(request)
 
-        assert response.process_graph_id == "test_graph"
+        assert response.process_graph_id
 
 
 class TestConsumerMethods:
