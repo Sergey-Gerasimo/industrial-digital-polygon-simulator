@@ -7,10 +7,12 @@ import time
 import pytest
 import pytest_asyncio
 from pathlib import Path
+from typing import Iterable, List
+import logging
+
 from testcontainers.compose import DockerCompose
 import asyncpg
 import grpc
-import warnings
 
 # Подавляем предупреждения SQLAlchemy о несовместимой полиморфной идентичности 'logist'
 # Мы используем прямой SQL для обхода полиморфной загрузки, поэтому эти предупреждения не критичны
@@ -28,19 +30,105 @@ from grpc_generated.simulator_pb2_grpc import (
     SimulationServiceStub,
 )
 
+from loguru import logger
+
+
+@pytest.fixture(scope="session", autouse=True)
+def configure_test_logging():
+    """Прибираем шумные логи в успешных тестах."""
+    # Подавляем debug/info от стандартного логгера
+    logging.getLogger().setLevel(logging.WARNING)
+    for noisy in ("infrastructure.repositories", "asyncio"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    # Настраиваем loguru только на предупреждения и выше
+    logger.remove()
+    logger.add(sys.stderr, level="WARNING")
+    yield
+
+
+def log_container_logs(
+    compose: DockerCompose,
+    services: Iterable[str],
+    label: str,
+    max_chars: int = 4000,
+) -> None:
+    """Выводит логи указанных контейнеров для отладки."""
+    for service in services:
+        try:
+            stdout, stderr = compose.get_logs(service)
+            if stdout:
+                logger.info(f"[{label}] {service} stdout:\n{stdout[-max_chars:]}")
+            if stderr:
+                logger.warning(f"[{label}] {service} stderr:\n{stderr[-max_chars:]}")
+        except Exception as exc:  # pragma: no cover - только для отладки
+            logger.warning(f"[{label}] Не удалось получить логи {service}: {exc}")
+
+
+def log_local_files(
+    log_dir: Path, label: str, max_files: int = 5, max_chars: int = 4000
+) -> None:
+    """Выводит хвост локальных файлов логов (монтируются из контейнера)."""
+    if not log_dir.exists():
+        return
+
+    files: List[Path] = [
+        p
+        for p in sorted(
+            log_dir.rglob("*"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
+        if p.is_file()
+    ][:max_files]
+
+    for file_path in files:
+        try:
+            content = file_path.read_text(errors="ignore")
+            if content:
+                logger.warning(
+                    f"[{label}] {file_path.name} (tail):\n{content[-max_chars:]}"
+                )
+        except Exception as exc:  # pragma: no cover - только для отладки
+            logger.warning(f"[{label}] Не удалось прочитать {file_path}: {exc}")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    """Сохраняем репорты этапов теста на item для последующего анализа."""
+    outcome = yield
+    rep = outcome.get_result()
+    setattr(item, f"rep_{rep.when}", rep)
+
+
+@pytest.fixture(autouse=True)
+def log_containers_on_failure(request, docker_compose):
+    """Если тест упал, выводим логи контейнеров для отладки."""
+    yield
+    rep_call = getattr(request.node, "rep_call", None)
+    if rep_call and rep_call.failed:
+        log_container_logs(
+            docker_compose,
+            services=("simulation_service", "db", "redis"),
+            label=f"test-failed:{request.node.name}",
+        )
+        log_local_files(
+            PROJECT_ROOT / "logs",
+            label=f"test-failed:{request.node.name}",
+        )
+
 
 @pytest.fixture(scope="session")
 def docker_compose():
     """Фикстура для управления Docker Compose окружением."""
+    logger.debug("Запуск Docker Compose для тестирования...")
+
     compose = DockerCompose(
         str(PROJECT_ROOT),
         compose_file_name="docker-compose.yaml",
         pull=False,
-        build=True,  # Собираем образ
+        build=True,
     )
 
     with compose:
-        # Ждем готовности PostgreSQL
         max_retries = 60
         for i in range(max_retries):
             try:
@@ -58,7 +146,7 @@ def docker_compose():
             time.sleep(1)
 
         # Ждем запуска сервиса - проверяем логи
-        print("Ожидание запуска simulation_service...")
+        logger.debug("Ожидание запуска simulation_service...")
         max_retries = 120  # Увеличиваем время ожидания
         service_ready = False
         for i in range(max_retries):
@@ -68,7 +156,6 @@ def docker_compose():
                     service_name="simulation_service",
                     command=["python", "-c", "import sys; sys.exit(0)"],
                 )
-                # Проверяем gRPC порты для обоих сервисов
                 channel_db = grpc.insecure_channel("localhost:50052")
                 channel_sim = grpc.insecure_channel("localhost:50051")
                 try:
@@ -77,33 +164,28 @@ def docker_compose():
                     channel_db.close()
                     channel_sim.close()
                     service_ready = True
-                    print("gRPC сервисы готовы!")
+                    logger.debug("gRPC сервисы готовы!")
                     break
                 except Exception:
                     channel_db.close()
                     channel_sim.close()
             except Exception as e:
                 if i % 10 == 0:  # Логируем каждые 10 попыток
-                    print(f"Ожидание gRPC сервиса... попытка {i}/{max_retries}")
+                    logger.debug(f"Ожидание gRPC сервиса... попытка {i}/{max_retries}")
             if not service_ready:
                 time.sleep(2)
 
         if not service_ready:
-            # Пробуем получить логи сервиса для отладки
-            try:
-                stdout, stderr = compose.get_logs("simulation_service")
-                print("Логи simulation_service:")
-                print(stdout[:2000] if stdout else "Нет логов")
-                if stderr:
-                    print("Ошибки:")
-                    print(stderr[:2000])
-            except:
-                pass
+            # Пробуем получить логи сервисов для отладки
+            log_container_logs(
+                compose,
+                services=("simulation_service", "db", "redis"),
+                label="startup-failed",
+                max_chars=4000,
+            )
             raise RuntimeError("gRPC сервис не готов после ожидания")
 
         yield compose
-
-        # Cleanup happens automatically when exiting context manager
 
 
 @pytest_asyncio.fixture(scope="function", autouse=True)
@@ -242,10 +324,20 @@ async def populate_test_data():
     from infrastructure.repositories import (
         WorkplaceRepository,
         LeanImprovementRepository,
+        WorkerRepository,
+        SupplierRepository,
+        EquipmentRepository,
+        ConsumerRepository,
+        TenderRepository,
     )
     from domain.workplace import Workplace
     from domain.lean_improvement import LeanImprovement
-    from domain import Qualification, Specialization
+    from domain.worker import Worker, Qualification, Specialization
+    from domain.supplier import Supplier
+    from domain.equipment import Equipment
+    from domain.consumer import Consumer, ConsumerType
+    from domain.tender import Tender, PaymentForm
+    from domain.logist import Logist, VehicleType
 
     # Используем те же параметры подключения, что и в cleanup_database
     db_host = "localhost"
@@ -275,6 +367,289 @@ async def populate_test_data():
 
     async with TestSessionLocal() as session:
         try:
+            # Создаем рабочих (нужны для всех операций)
+            worker_repo = WorkerRepository(session)
+
+            worker1 = Worker(
+                worker_id=str(uuid4()),
+                name="Test Worker 1",
+                qualification=Qualification.II.value,
+                specialty=Specialization.ASSEMBLER.value,
+                salary=50000,
+            )
+            try:
+                await worker_repo.save(worker1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            worker2 = Worker(
+                worker_id=str(uuid4()),
+                name="Test Worker 2",
+                qualification=Qualification.III.value,
+                specialty=Specialization.WAREHOUSE_KEEPER.value,
+                salary=45000,
+            )
+            try:
+                await worker_repo.save(worker2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            worker3 = Worker(
+                worker_id=str(uuid4()),
+                name="Test Worker 3",
+                qualification=Qualification.IV.value,
+                specialty=Specialization.QUALITY_CONTROLLER.value,
+                salary=55000,
+            )
+            try:
+                await worker_repo.save(worker3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            # Создаем логистов
+            logist1 = Logist(
+                worker_id=str(uuid4()),
+                name="Test Logist 1",
+                qualification=Qualification.III.value,
+                specialty=Specialization.LOGIST.value,
+                salary=60000,
+                speed=80,
+                vehicle_type=VehicleType.VAN.value,
+            )
+            try:
+                await worker_repo.save(logist1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            logist2 = Logist(
+                worker_id=str(uuid4()),
+                name="Test Logist 2",
+                qualification=Qualification.IV.value,
+                specialty=Specialization.LOGIST.value,
+                salary=65000,
+                speed=90,
+                vehicle_type=VehicleType.TRUCK.value,
+            )
+            try:
+                await worker_repo.save(logist2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            logist3 = Logist(
+                worker_id=str(uuid4()),
+                name="Test Logist 3",
+                qualification=Qualification.II.value,
+                specialty=Specialization.LOGIST.value,
+                salary=55000,
+                speed=70,
+                vehicle_type=VehicleType.ELECTRIC.value,
+            )
+            try:
+                await worker_repo.save(logist3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            # Создаем поставщиков
+            supplier_repo = SupplierRepository(session)
+
+            supplier1 = Supplier(
+                supplier_id=str(uuid4()),
+                name="Test Supplier 1",
+                product_name="Steel Materials",
+                material_type="raw_materials",
+                delivery_period=7,
+                special_delivery_period=3,
+                reliability=0.95,
+                product_quality=0.9,
+                cost=1000,
+                special_delivery_cost=1500,
+            )
+            try:
+                await supplier_repo.save(supplier1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            supplier2 = Supplier(
+                supplier_id=str(uuid4()),
+                name="Test Supplier 2",
+                product_name="Electronic Components",
+                material_type="components",
+                delivery_period=10,
+                special_delivery_period=5,
+                reliability=0.9,
+                product_quality=0.85,
+                cost=2000,
+                special_delivery_cost=3000,
+            )
+            try:
+                await supplier_repo.save(supplier2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            supplier3 = Supplier(
+                supplier_id=str(uuid4()),
+                name="Test Supplier 3",
+                product_name="Packaging Materials",
+                material_type="packaging",
+                delivery_period=5,
+                special_delivery_period=2,
+                reliability=0.98,
+                product_quality=0.95,
+                cost=500,
+                special_delivery_cost=800,
+            )
+            try:
+                await supplier_repo.save(supplier3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            # Создаем оборудование
+            equipment_repo = EquipmentRepository(session)
+
+            equipment1 = Equipment(
+                equipment_id=str(uuid4()),
+                name="Test CNC Machine 1",
+                equipment_type="cnc_machine",
+                reliability=0.95,
+                maintenance_period=30,
+                maintenance_cost=5000,
+                cost=500000,
+                repair_cost=10000,
+                repair_time=8,
+            )
+            try:
+                await equipment_repo.save(equipment1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            equipment2 = Equipment(
+                equipment_id=str(uuid4()),
+                name="Test Assembly Line 1",
+                equipment_type="assembly_line",
+                reliability=0.92,
+                maintenance_period=45,
+                maintenance_cost=8000,
+                cost=750000,
+                repair_cost=15000,
+                repair_time=12,
+            )
+            try:
+                await equipment_repo.save(equipment2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            equipment3 = Equipment(
+                equipment_id=str(uuid4()),
+                name="Test Quality Control Station 1",
+                equipment_type="quality_station",
+                reliability=0.98,
+                maintenance_period=60,
+                maintenance_cost=3000,
+                cost=150000,
+                repair_cost=5000,
+                repair_time=4,
+            )
+            try:
+                await equipment_repo.save(equipment3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            # Создаем потребителей
+            consumer_repo = ConsumerRepository(session)
+
+            consumer1 = Consumer(
+                consumer_id=uuid4(),
+                name="Test Government Agency",
+                type=ConsumerType.GOVERMANT.value,
+            )
+            try:
+                await consumer_repo.save(consumer1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            consumer2 = Consumer(
+                consumer_id=uuid4(),
+                name="Test Private Company",
+                type=ConsumerType.NOT_GOVERMANT.value,
+            )
+            try:
+                await consumer_repo.save(consumer2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            consumer3 = Consumer(
+                consumer_id=uuid4(),
+                name="Test International Corp",
+                type=ConsumerType.NOT_GOVERMANT.value,
+            )
+            try:
+                await consumer_repo.save(consumer3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            # Создаем тендеры
+            tender_repo = TenderRepository(session)
+
+            tender1 = Tender(
+                tender_id=str(uuid4()),
+                consumer=consumer1,
+                cost=50000,
+                quantity_of_products=100,
+                penalty_per_day=500,
+                warranty_years=2,
+                payment_form=PaymentForm.FULL_ADVANCE.value,
+            )
+            try:
+                await tender_repo.save(tender1)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            tender2 = Tender(
+                tender_id=str(uuid4()),
+                consumer=consumer2,
+                cost=75000,
+                quantity_of_products=150,
+                penalty_per_day=750,
+                warranty_years=3,
+                payment_form=PaymentForm.PARTIAL_ADVANCE.value,
+            )
+            try:
+                await tender_repo.save(tender2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            tender3 = Tender(
+                tender_id=str(uuid4()),
+                consumer=consumer3,
+                cost=100000,
+                quantity_of_products=200,
+                penalty_per_day=1000,
+                warranty_years=5,
+                payment_form=PaymentForm.ON_DELIVERY.value,
+            )
+            try:
+                await tender_repo.save(tender3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
             # Создаем рабочие места (нужны для factory при создании симуляции)
             workplace_repo = WorkplaceRepository(session)
 
@@ -311,6 +686,22 @@ async def populate_test_data():
             except Exception:
                 await session.rollback()
 
+            workplace3 = Workplace(
+                workplace_id=str(uuid4()),
+                workplace_name="Test Workplace 3",
+                required_speciality=Specialization.QUALITY_CONTROLLER.value,
+                required_qualification=Qualification.III.value,
+                required_equipment="",
+                is_start_node=False,
+                is_end_node=False,
+                # x и y по умолчанию None
+            )
+            try:
+                await workplace_repo.save(workplace3)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
             # Создаем LEAN улучшения (нужны для factory и теста set_lean_improvement_status)
             improvement_repo = LeanImprovementRepository(session)
 
@@ -336,6 +727,19 @@ async def populate_test_data():
             )
             try:
                 await improvement_repo.save(improvement2)
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+            improvement3 = LeanImprovement(
+                improvement_id=str(uuid4()),
+                name="Third Improvement",
+                is_implemented=False,
+                implementation_cost=20000,
+                efficiency_gain=0.25,
+            )
+            try:
+                await improvement_repo.save(improvement3)
                 await session.commit()
             except Exception:
                 await session.rollback()

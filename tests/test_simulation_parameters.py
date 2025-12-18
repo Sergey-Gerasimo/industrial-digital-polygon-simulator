@@ -702,6 +702,192 @@ class TestSimulationParameters:
         assert current == "Утилизировать"
         assert isinstance(current, str)
 
+    def test_set_process_graph_adds_new_routes(self):
+        """Тест что set_process_graph добавляет новые маршруты логиста."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1")
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2")
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3")
+        params.processes.workplaces = [wp1, wp2, wp3]
+
+        # Изначально маршрутов нет
+        assert len(params.processes.routes) == 0
+
+        # Создаем новый граф с маршрутами
+        new_graph = ProcessGraph(
+            process_graph_id="graph_with_routes",
+            workplaces=[wp1, wp2, wp3],
+            routes=[
+                Route(length=10, from_workplace="wp1", to_workplace="wp2"),
+                Route(length=15, from_workplace="wp2", to_workplace="wp3"),
+            ],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что маршруты добавлены
+        assert len(params.processes.routes) == 2
+
+        # Проверяем первый маршрут
+        route1 = params.processes.get_route("wp1", "wp2")
+        assert route1 is not None
+        assert route1.length == 10
+        assert route1.from_workplace == "wp1"
+        assert route1.to_workplace == "wp2"
+
+        # Проверяем второй маршрут
+        route2 = params.processes.get_route("wp2", "wp3")
+        assert route2 is not None
+        assert route2.length == 15
+        assert route2.from_workplace == "wp2"
+        assert route2.to_workplace == "wp3"
+
+    def test_set_process_graph_adds_multiple_routes(self):
+        """Тест добавления нескольких маршрутов логиста."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1")
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2")
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3")
+        wp4 = Workplace(workplace_id="wp4", workplace_name="Workplace 4")
+        params.processes.workplaces = [wp1, wp2, wp3, wp4]
+
+        # Добавляем несколько маршрутов
+        new_graph = ProcessGraph(
+            process_graph_id="graph_multiple_routes",
+            workplaces=[wp1, wp2, wp3, wp4],
+            routes=[
+                Route(length=5, from_workplace="wp1", to_workplace="wp2"),
+                Route(length=8, from_workplace="wp2", to_workplace="wp3"),
+                Route(length=12, from_workplace="wp3", to_workplace="wp4"),
+                Route(length=20, from_workplace="wp1", to_workplace="wp4"),  # прямой маршрут
+            ],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что все маршруты добавлены
+        assert len(params.processes.routes) == 4
+
+        # Проверяем каждый маршрут
+        assert params.processes.get_route("wp1", "wp2") is not None
+        assert params.processes.get_route("wp1", "wp2").length == 5
+
+        assert params.processes.get_route("wp2", "wp3") is not None
+        assert params.processes.get_route("wp2", "wp3").length == 8
+
+        assert params.processes.get_route("wp3", "wp4") is not None
+        assert params.processes.get_route("wp3", "wp4").length == 12
+
+        assert params.processes.get_route("wp1", "wp4") is not None
+        assert params.processes.get_route("wp1", "wp4").length == 20
+
+    def test_set_process_graph_does_not_duplicate_existing_routes(self):
+        """Тест что set_process_graph не дублирует существующие маршруты."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1")
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2")
+        params.processes.workplaces = [wp1, wp2]
+
+        # Добавляем первый маршрут
+        first_graph = ProcessGraph(
+            process_graph_id="first",
+            workplaces=[wp1, wp2],
+            routes=[Route(length=10, from_workplace="wp1", to_workplace="wp2")],
+        )
+
+        params.set_process_graph(first_graph)
+        assert len(params.processes.routes) == 1
+
+        # Пытаемся добавить тот же маршрут снова (с той же или другой длиной)
+        second_graph = ProcessGraph(
+            process_graph_id="second",
+            workplaces=[wp1, wp2],
+            routes=[Route(length=15, from_workplace="wp1", to_workplace="wp2")],  # другая длина
+        )
+
+        params.set_process_graph(second_graph)
+
+        # Маршрут не должен дублироваться (должен остаться только один)
+        # Но по текущей логике, если маршрут уже существует, он не добавляется
+        # Однако длина не обновляется - это текущее поведение
+        assert len(params.processes.routes) == 1
+        # Длина остается прежней (10), так как маршрут не обновляется, а только проверяется существование
+        assert params.processes.get_route("wp1", "wp2").length == 10
+
+    def test_set_process_graph_adds_routes_incrementally(self):
+        """Тест инкрементального добавления маршрутов."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1")
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2")
+        wp3 = Workplace(workplace_id="wp3", workplace_name="Workplace 3")
+        params.processes.workplaces = [wp1, wp2, wp3]
+
+        # Первое обновление - добавляем один маршрут
+        graph1 = ProcessGraph(
+            process_graph_id="incremental_1",
+            workplaces=[wp1, wp2, wp3],
+            routes=[Route(length=10, from_workplace="wp1", to_workplace="wp2")],
+        )
+
+        params.set_process_graph(graph1)
+        assert len(params.processes.routes) == 1
+
+        # Второе обновление - добавляем еще один маршрут
+        graph2 = ProcessGraph(
+            process_graph_id="incremental_2",
+            workplaces=[wp1, wp2, wp3],
+            routes=[Route(length=15, from_workplace="wp2", to_workplace="wp3")],
+        )
+
+        params.set_process_graph(graph2)
+        assert len(params.processes.routes) == 2  # Оба маршрута должны быть
+
+        # Третье обновление - добавляем третий маршрут
+        graph3 = ProcessGraph(
+            process_graph_id="incremental_3",
+            workplaces=[wp1, wp2, wp3],
+            routes=[Route(length=20, from_workplace="wp1", to_workplace="wp3")],
+        )
+
+        params.set_process_graph(graph3)
+        assert len(params.processes.routes) == 3  # Все три маршрута должны быть
+
+        # Проверяем все маршруты
+        assert params.processes.get_route("wp1", "wp2") is not None
+        assert params.processes.get_route("wp2", "wp3") is not None
+        assert params.processes.get_route("wp1", "wp3") is not None
+
+    def test_set_process_graph_routes_with_coordinates(self):
+        """Тест добавления маршрутов вместе с обновлением координат."""
+        params = SimulationParameters()
+        wp1 = Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=None, y=None)
+        wp2 = Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=None, y=None)
+        params.processes.workplaces = [wp1, wp2]
+
+        # Обновляем координаты и добавляем маршрут одновременно
+        new_graph = ProcessGraph(
+            process_graph_id="routes_and_coords",
+            workplaces=[
+                Workplace(workplace_id="wp1", workplace_name="Workplace 1", x=1, y=1),
+                Workplace(workplace_id="wp2", workplace_name="Workplace 2", x=3, y=3),
+            ],
+            routes=[Route(length=5, from_workplace="wp1", to_workplace="wp2")],
+        )
+
+        params.set_process_graph(new_graph)
+
+        # Проверяем, что координаты обновились
+        assert wp1.x == 1
+        assert wp1.y == 1
+        assert wp2.x == 3
+        assert wp2.y == 3
+
+        # Проверяем, что маршрут добавлен
+        assert len(params.processes.routes) == 1
+        route = params.processes.get_route("wp1", "wp2")
+        assert route is not None
+        assert route.length == 5
+
     def test_complex_scenario(self):
         """Комплексный тест использования нескольких методов вместе."""
         params = SimulationParameters(capital=10000000)

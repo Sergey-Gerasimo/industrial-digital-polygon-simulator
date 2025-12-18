@@ -86,8 +86,9 @@ from grpc_generated.simulator_pb2 import (
     PingRequest,
 )
 from grpc_generated.simulator_pb2_grpc import SimulationDatabaseManagerServicer
-
+from application.proto_mappers import domain_process_graph_to_proto
 from infrastructure.repositories import (
+    SimulationRepository,
     SupplierRepository,
     WorkerRepository,
     EquipmentRepository,
@@ -115,6 +116,7 @@ from .proto_mappers import (
 from domain import (
     Qualification,
     ConsumerType,
+    SimulationParameters,
     Specialization,
     VehicleType,
     PaymentForm,
@@ -869,30 +871,29 @@ class SimulationDatabaseManagerImpl(SimulationDatabaseManagerServicer):
         async with self.session_factory() as session:
             try:
                 # Получаем все рабочие места из БД
-                repo = WorkplaceRepository(session)
-                domain_workplaces = await repo.get_all()
+                repo = SimulationRepository(session)
+                simulation = await repo.get(request.simulation_id)
+                if simulation is None:
+                    context.set_code(grpc.StatusCode.NOT_FOUND)
+                    context.set_details(
+                        f"Симуляция с ID {request.simulation_id} не найдена"
+                    )
+                    return domain_process_graph_to_proto(ProcessGraph())
 
-                # Преобразуем в proto
-                proto_workplaces = [
-                    domain_workplace_to_proto(w) for w in domain_workplaces
-                ]
+                for parameter in simulation.parameters:
+                    if parameter.step == request.step:
+                        return domain_process_graph_to_proto(parameter.processes)
 
-                # Создаем пустые маршруты (можно расширить логику позже)
-                routes = []
-
-                return ProcessGraph(
-                    process_graph_id=request.process_graph_id,
-                    workplaces=proto_workplaces,
-                    routes=routes,
-                )
             except Exception as e:
                 logger.error(f"Error getting process graph: {e}", exc_info=True)
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Ошибка при получении графа процесса: {str(e)}")
-                return ProcessGraph(
-                    process_graph_id=request.process_graph_id,
-                    workplaces=[],
-                    routes=[],
+                return domain_process_graph_to_proto(
+                    ProcessGraph(
+                        process_graph_id=request.process_graph_id,
+                        workplaces=[],
+                        routes=[],
+                    )
                 )
 
     # -----------------------------------------------------------------

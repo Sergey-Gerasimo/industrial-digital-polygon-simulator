@@ -445,7 +445,7 @@ class SimulationServiceImpl(SimulationServiceServicer):
             if not sim.parameters:
                 raise ValueError("У симуляции нет параметров")
             params = max(sim.parameters, key=lambda p: p.step)
-            params.processes.unset_worker_on_workplace(request.workplace_id)
+            params.processes.unset_worker_on_workplace(request.worker_id)
 
         return await self._update_and_save(
             request.simulation_id,

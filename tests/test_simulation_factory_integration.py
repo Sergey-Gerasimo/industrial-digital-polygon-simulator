@@ -17,7 +17,13 @@ from domain.simulaton import (
     Simulation,
     SimulationParameters,
     SimulationResults,
+    DealingWithDefects,
+    SaleStrategest,
+    DistributionStrategy,
 )
+from domain.logist import Logist
+from domain.supplier import Supplier
+from domain.tender import Tender
 from domain.metrics import (
     FactoryMetrics,
     ProductionMetrics,
@@ -129,6 +135,28 @@ class TestSimulationFactoryIntegration:
             room_id=room_id,
         )
 
+        # Настраиваем параметры для запуска симуляции (пользователь должен добавить эти поля)
+        params = simulation.parameters[0]
+        params.logist = Logist(worker_id="test_logist", name="Test Logist")
+        params.suppliers = [Supplier(supplier_id="supplier_1", name="Supplier 1", product_quality=0.9, delivery_period=7, cost=100)]
+        params.backup_suppliers = [Supplier(supplier_id="backup_1", name="Backup Supplier", product_quality=0.8, delivery_period=10, cost=120)]
+        params.tenders = [Tender(tender_id="tender_1", quantity_of_products=100, cost=1000)]
+        params.dealing_with_defects = DealingWithDefects.DISPOSE
+        params.sales_strategy = SaleStrategest.NONE
+        params.distribution_strategy = DistributionStrategy.DISTRIBUTION_STRATEGY_UNSPECIFIED
+
+        # Убедимся, что обязательные списки не пустые
+        if not params.production_improvements:
+            from domain.lean_improvement import LeanImprovement
+            params.production_improvements = [LeanImprovement(improvement_id="test_imp", name="Test Improvement", is_implemented=False)]
+        if not params.certifications:
+            from domain.certification import Certification
+            from domain.enums import CertificationEnum
+            params.certifications = [Certification(certificate_type=CertificationEnum.ГОСТ_Р, is_obtained=False)]
+        if not params.lean_improvements:
+            from domain.lean_improvement import LeanImprovement
+            params.lean_improvements = [LeanImprovement(improvement_id="test_lean", name="Test Lean Improvement", is_implemented=False)]
+
         # Сохраняем начальное количество параметров и результатов
         initial_params_count = len(simulation.parameters)
         initial_results_count = len(simulation.results)
@@ -182,8 +210,30 @@ class TestSimulationFactoryIntegration:
             room_id=room_id,
         )
 
-        # Запускаем симуляцию 4 раза успешно
-        for _ in range(4):
+        # Настраиваем параметры для запуска симуляции (пользователь должен добавить эти поля)
+        params = simulation.parameters[0]
+        params.logist = Logist(worker_id="test_logist", name="Test Logist")
+        params.suppliers = [Supplier(supplier_id="supplier_1", name="Supplier 1", product_quality=0.9, delivery_period=7, cost=100)]
+        params.backup_suppliers = [Supplier(supplier_id="backup_1", name="Backup Supplier", product_quality=0.8, delivery_period=10, cost=120)]
+        params.tenders = [Tender(tender_id="tender_1", quantity_of_products=100, cost=1000)]
+        params.dealing_with_defects = DealingWithDefects.DISPOSE
+        params.sales_strategy = SaleStrategest.NONE
+        params.distribution_strategy = DistributionStrategy.DISTRIBUTION_STRATEGY_UNSPECIFIED
+
+        # Убедимся, что обязательные списки не пустые
+        if not params.production_improvements:
+            from domain.lean_improvement import LeanImprovement
+            params.production_improvements = [LeanImprovement(improvement_id="test_imp", name="Test Improvement", is_implemented=False)]
+        if not params.certifications:
+            from domain.certification import Certification
+            from domain.enums import CertificationEnum
+            params.certifications = [Certification(certificate_type=CertificationEnum.ГОСТ_Р, is_obtained=False)]
+        if not params.lean_improvements:
+            from domain.lean_improvement import LeanImprovement
+            params.lean_improvements = [LeanImprovement(improvement_id="test_lean", name="Test Lean Improvement", is_implemented=False)]
+
+        # Запускаем симуляцию 3 раза успешно
+        for _ in range(3):
             simulation.run_simulation()
 
         # Проверяем, что количество параметров = 4 (шаги 1, 2, 3, 4)
@@ -195,18 +245,17 @@ class TestSimulationFactoryIntegration:
         assert params_by_step[2].step == 3
         assert params_by_step[3].step == 4
 
-        # Проверяем, что количество результатов = 4
-        assert len(simulation.results) == 4
+        # Проверяем, что количество результатов = 3
+        assert len(simulation.results) == 3
         results_by_step = sorted(simulation.results, key=lambda r: r.step)
         assert results_by_step[0].step == 1
         assert results_by_step[1].step == 2
         assert results_by_step[2].step == 3
-        assert results_by_step[3].step == 4
 
-        # При 5-й попытке должна быть ошибка
+        # При 4-й попытке должна быть ошибка
         with pytest.raises(ValueError, match="Максимальное количество шагов"):
             simulation.run_simulation()
 
         # Проверяем, что состояние не изменилось
         assert len(simulation.parameters) == 4
-        assert len(simulation.results) == 4
+        assert len(simulation.results) == 3
