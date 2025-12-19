@@ -655,34 +655,7 @@ def _is_empty_simulation_parameters(
     ):
         return True
 
-    if (
-        simulation_parameters.backup_suppliers is None
-        or len(simulation_parameters.backup_suppliers) == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.product_warehouse is None
-        or simulation_parameters.product_warehouse.size == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.materials_warehouse is None
-        or simulation_parameters.materials_warehouse.size == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.processes is None
-        or simulation_parameters.processes.process_graph_id is None
-    ):
-        return True
-
     if simulation_parameters.tenders is None or len(simulation_parameters.tenders) == 0:
-        return True
-
-    if simulation_parameters.dealing_with_defects is None:
         return True
 
     if (
@@ -1037,7 +1010,9 @@ def _calculate_cost(simulation_parameters: SimulationParameters) -> int:
             cost += workplace.worker.salary * (four_year_in_days // 12)
 
     for route in simulation_parameters.processes.routes:
-        cost += route.cost * (four_year_in_days // route.delivery_period)
+        delivery_period = getattr(route, "delivery_period", 0) or 1
+        route_cost = getattr(route, "cost", 0)
+        cost += route_cost * (four_year_in_days // max(delivery_period, 1))
 
     return cost
 

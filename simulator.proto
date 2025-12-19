@@ -17,6 +17,7 @@ message Supplier {
     double product_quality = 8;
     uint32 cost = 9; 
     uint32 special_delivery_cost = 10;
+    bool quality_inspection_enabled = 11;
 }
 
 message Warehouse {
