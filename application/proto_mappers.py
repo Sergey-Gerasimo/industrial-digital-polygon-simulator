@@ -1258,12 +1258,24 @@ def proto_required_material_to_domain(proto: RequiredMaterialProto) -> RequiredM
 
 def domain_factory_metrics_obj_to_proto(domain: FactoryMetrics) -> FactoryMetricsProto:
     """Преобразует доменный объект FactoryMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = FactoryMetricsProto()
-    proto.profitability = domain.profitability
-    proto.on_time_delivery_rate = domain.on_time_delivery_rate
-    proto.oee = domain.oee
-    proto.total_procurement_cost = domain.total_procurement_cost
-    proto.defect_rate = domain.defect_rate
+    proto.profitability = _to_float(domain.profitability)
+    proto.on_time_delivery_rate = _to_float(domain.on_time_delivery_rate)
+    proto.oee = _to_float(domain.oee)
+    proto.total_procurement_cost = _to_int(domain.total_procurement_cost)
+    proto.defect_rate = _to_float(domain.defect_rate)
 
     # Преобразуем метрики складов
     for warehouse_type, warehouse_metrics in domain.warehouse_metrics.items():
@@ -1296,16 +1308,30 @@ def domain_warehouse_metrics_to_proto(
     domain: WarehouseMetrics,
 ) -> WarehouseMetricsProto:
     """Преобразует доменный объект WarehouseMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = WarehouseMetricsProto()
-    proto.fill_level = domain.fill_level
-    proto.current_load = domain.current_load
-    proto.max_capacity = domain.max_capacity
+    proto.fill_level = _to_float(domain.fill_level)
+    proto.current_load = _to_int(domain.current_load)
+    proto.max_capacity = _to_int(domain.max_capacity)
     for material_name, level in domain.material_levels.items():
-        proto.material_levels[material_name] = level
+        proto.material_levels[material_name] = _to_int(level)
     # Преобразуем load_over_time (массив чисел)
-    proto.load_over_time[:] = domain.load_over_time
+    proto.load_over_time[:] = [_to_int(v) for v in domain.load_over_time]
     # Преобразуем max_capacity_over_time (массив чисел)
-    proto.max_capacity_over_time[:] = domain.max_capacity_over_time
+    proto.max_capacity_over_time[:] = [
+        _to_int(v) for v in domain.max_capacity_over_time
+    ]
     return proto
 
 
@@ -1325,18 +1351,32 @@ def domain_production_metrics_obj_to_proto(
     domain: ProductionMetrics,
 ) -> ProductionMetricsProto:
     """Преобразует доменный объект ProductionMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = ProductionMetricsProto()
-    proto.average_equipment_utilization = domain.average_equipment_utilization
-    proto.wip_count = domain.wip_count
-    proto.finished_goods_count = domain.finished_goods_count
+    proto.average_equipment_utilization = _to_float(
+        domain.average_equipment_utilization
+    )
+    proto.wip_count = _to_int(domain.wip_count)
+    proto.finished_goods_count = _to_int(domain.finished_goods_count)
 
     for monthly in domain.monthly_productivity:
         monthly_proto = proto.monthly_productivity.add()
         monthly_proto.month = monthly.month
-        monthly_proto.units_produced = monthly.units_produced
+        monthly_proto.units_produced = _to_int(monthly.units_produced)
 
     for material_name, quantity in domain.material_reserves.items():
-        proto.material_reserves[material_name] = quantity
+        proto.material_reserves[material_name] = _to_int(quantity)
 
     return proto
 
@@ -1365,20 +1405,32 @@ def proto_production_metrics_to_domain(
 
 def domain_quality_metrics_obj_to_proto(domain: QualityMetrics) -> QualityMetricsProto:
     """Преобразует доменный объект QualityMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = QualityMetricsProto()
-    proto.defect_percentage = domain.defect_percentage
-    proto.good_output_percentage = domain.good_output_percentage
-    proto.average_material_quality = domain.average_material_quality
-    proto.average_supplier_failure_probability = (
+    proto.defect_percentage = _to_float(domain.defect_percentage)
+    proto.good_output_percentage = _to_float(domain.good_output_percentage)
+    proto.average_material_quality = _to_float(domain.average_material_quality)
+    proto.average_supplier_failure_probability = _to_float(
         domain.average_supplier_failure_probability
     )
-    proto.procurement_volume = domain.procurement_volume
+    proto.procurement_volume = _to_int(domain.procurement_volume)
 
     for cause in domain.defect_causes:
         cause_proto = proto.defect_causes.add()
         cause_proto.cause = cause.cause
-        cause_proto.count = cause.count
-        cause_proto.percentage = cause.percentage
+        cause_proto.count = _to_int(cause.count)
+        cause_proto.percentage = _to_float(cause.percentage)
 
     return proto
 
@@ -1409,27 +1461,39 @@ def domain_engineering_metrics_obj_to_proto(
     domain: EngineeringMetrics,
 ) -> EngineeringMetricsProto:
     """Преобразует доменный объект EngineeringMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = EngineeringMetricsProto()
 
     for timing in domain.operation_timings:
         timing_proto = proto.operation_timings.add()
         timing_proto.operation_name = timing.operation_name
-        timing_proto.cycle_time = timing.cycle_time
-        timing_proto.takt_time = timing.takt_time
-        timing_proto.timing_cost = timing.timing_cost
+        timing_proto.cycle_time = _to_int(timing.cycle_time)
+        timing_proto.takt_time = _to_int(timing.takt_time)
+        timing_proto.timing_cost = _to_int(timing.timing_cost)
 
     for downtime in domain.downtime_records:
         downtime_proto = proto.downtime_records.add()
         downtime_proto.cause = downtime.cause
-        downtime_proto.total_minutes = downtime.total_minutes
-        downtime_proto.average_per_shift = downtime.average_per_shift
+        downtime_proto.total_minutes = _to_int(downtime.total_minutes)
+        downtime_proto.average_per_shift = _to_float(downtime.average_per_shift)
 
     for defect in domain.defect_analysis:
         defect_proto = proto.defect_analysis.add()
         defect_proto.defect_type = defect.defect_type
-        defect_proto.count = defect.count
-        defect_proto.percentage = defect.percentage
-        defect_proto.cumulative_percentage = defect.cumulative_percentage
+        defect_proto.count = _to_int(defect.count)
+        defect_proto.percentage = _to_float(defect.percentage)
+        defect_proto.cumulative_percentage = _to_float(defect.cumulative_percentage)
 
     return proto
 
@@ -1481,22 +1545,34 @@ def domain_commercial_metrics_obj_to_proto(
     domain: CommercialMetrics,
 ) -> CommercialMetricsProto:
     """Преобразует доменный объект CommercialMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = CommercialMetricsProto()
-    proto.tender_revenue_plan = domain.tender_revenue_plan
-    proto.total_payments = domain.total_payments
-    proto.total_receipts = domain.total_receipts
-    proto.on_time_completed_orders = domain.on_time_completed_orders
+    proto.tender_revenue_plan = _to_int(domain.tender_revenue_plan)
+    proto.total_payments = _to_int(domain.total_payments)
+    proto.total_receipts = _to_int(domain.total_receipts)
+    proto.on_time_completed_orders = _to_int(domain.on_time_completed_orders)
 
     for revenue in domain.yearly_revenues:
         revenue_proto = proto.yearly_revenues.add()
-        revenue_proto.year = revenue.year
-        revenue_proto.revenue = revenue.revenue
+        revenue_proto.year = _to_int(revenue.year)
+        revenue_proto.revenue = _to_int(revenue.revenue)
 
     for strategy, value in domain.sales_forecast.items():
-        proto.sales_forecast[strategy] = value
+        proto.sales_forecast[strategy] = _to_float(value)
 
     for strategy, cost in domain.strategy_costs.items():
-        proto.strategy_costs[strategy] = cost
+        proto.strategy_costs[strategy] = _to_int(cost)
 
     for point in domain.tender_graph:
         point_proto = proto.tender_graph.add()
@@ -1507,7 +1583,7 @@ def domain_commercial_metrics_obj_to_proto(
     for profitability in domain.project_profitabilities:
         profitability_proto = proto.project_profitabilities.add()
         profitability_proto.project_name = profitability.project_name
-        profitability_proto.profitability = profitability.profitability
+        profitability_proto.profitability = _to_float(profitability.profitability)
 
     return proto
 
@@ -1561,19 +1637,37 @@ def domain_procurement_metrics_obj_to_proto(
     domain: ProcurementMetrics,
 ) -> ProcurementMetricsProto:
     """Преобразует доменный объект ProcurementMetrics в proto сообщение."""
+    def _to_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     proto = ProcurementMetricsProto()
-    proto.total_procurement_value = domain.total_procurement_value
+    proto.total_procurement_value = _to_int(domain.total_procurement_value)
 
     for performance in domain.supplier_performances:
         performance_proto = proto.supplier_performances.add()
         performance_proto.supplier_id = performance.supplier_id
-        performance_proto.delivered_quantity = performance.delivered_quantity
-        performance_proto.projected_defect_rate = performance.projected_defect_rate
-        performance_proto.planned_reliability = performance.planned_reliability
-        performance_proto.actual_reliability = performance.actual_reliability
-        performance_proto.planned_cost = performance.planned_cost
-        performance_proto.actual_cost = performance.actual_cost
-        performance_proto.actual_defect_count = performance.actual_defect_count
+        performance_proto.delivered_quantity = _to_int(performance.delivered_quantity)
+        performance_proto.projected_defect_rate = _to_float(
+            performance.projected_defect_rate
+        )
+        performance_proto.planned_reliability = _to_float(
+            performance.planned_reliability
+        )
+        performance_proto.actual_reliability = _to_float(
+            performance.actual_reliability
+        )
+        performance_proto.planned_cost = _to_int(performance.planned_cost)
+        performance_proto.actual_cost = _to_int(performance.actual_cost)
+        performance_proto.actual_defect_count = _to_int(performance.actual_defect_count)
 
     return proto
 

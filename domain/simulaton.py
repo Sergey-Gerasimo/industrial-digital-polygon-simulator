@@ -43,6 +43,14 @@ MAX_SIMULATION_STEPS = 3
 DAYS_IN_YEAR = 365
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """Безопасное преобразование к int с запасным значением."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class SaleStrategest(str, Enum):
     NONE = "none"
     LOW_PRICES = "Низкие цены"
@@ -1028,16 +1036,20 @@ def _calculate_cost(simulation_parameters: SimulationParameters) -> int:
     four_year_in_days = 4 * DAYS_IN_YEAR
 
     for supplier in simulation_parameters.suppliers:
-        cost += supplier.cost * (four_year_in_days // supplier.delivery_period)
+        delivery_period = _safe_int(getattr(supplier, "delivery_period", 0), 1)
+        supplier_cost = _safe_int(getattr(supplier, "cost", 0), 0)
+        cost += supplier_cost * (four_year_in_days // max(1, delivery_period))
 
     for workplace in simulation_parameters.processes.workplaces:
         if workplace.equipment is not None:
-            cost += workplace.equipment.cost
+            cost += _safe_int(workplace.equipment.cost, 0)
         if workplace.worker is not None:
-            cost += workplace.worker.salary * (four_year_in_days // 12)
+            cost += _safe_int(workplace.worker.salary, 0) * (four_year_in_days // 12)
 
+    # В proto у Route есть только length; используем его как основу стоимости.
     for route in simulation_parameters.processes.routes:
-        cost += route.cost * (four_year_in_days // route.delivery_period)
+        route_length = _safe_int(getattr(route, "length", 0), 0)
+        cost += route_length
 
     return cost
 
@@ -1055,22 +1067,28 @@ def _run_simulation(
     if simulation_parameters.is_simulation_parameters_empty:
         raise ValueError("Отсутвуют параметры для выполнения симуляции")
 
-    cost = _calculate_cost(simulation_parameters)
-    profit = _calculate_profit(simulation_parameters)
-    profitability = profit / cost
+    try:
+        cost = _calculate_cost(simulation_parameters)
+        profit = _calculate_profit(simulation_parameters)
+        profitability = profit / cost
+        return SimulationResults(
+            cost=cost,
+            profit=profit,
+            profitability=profitability,
+            step=simulation_parameters.step,
+            factory_metrics=_calculate_fatory_metrics(simulation_parameters),
+            production_metrics=_calculate_production_metrics(simulation_parameters),
+            quality_metrics=_calculate_quality_metrics(simulation_parameters),
+            engineering_metrics=_calculate_engineering_metrics(simulation_parameters),
+            commercial_metrics=_calculate_commercial_metrics(simulation_parameters),
+            procurement_metrics=_calculate_procurement_metrics(simulation_parameters),
+        )
+    except Exception as exc:  # pragma: no cover - диагностическое ветвление
+        import traceback
 
-    return SimulationResults(
-        cost=cost,
-        profit=profit,
-        profitability=profitability,
-        step=simulation_parameters.step,
-        factory_metrics=_calculate_fatory_metrics(simulation_parameters),
-        production_metrics=_calculate_production_metrics(simulation_parameters),
-        quality_metrics=_calculate_quality_metrics(simulation_parameters),
-        engineering_metrics=_calculate_engineering_metrics(simulation_parameters),
-        commercial_metrics=_calculate_commercial_metrics(simulation_parameters),
-        procurement_metrics=_calculate_procurement_metrics(simulation_parameters),
-    )
+        raise ValueError(
+            f"Ошибка расчета симуляции: {exc}; stack: {traceback.format_exc()}"
+        ) from exc
 
 
 def _calculate_deffect_rate(simulation_parameters: SimulationParameters) -> float:
@@ -1084,13 +1102,200 @@ def _calculate_deffect_rate(simulation_parameters: SimulationParameters) -> floa
 def _calculate_on_time_delivery_rate(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    # TODO: Implement
-    return 1.0
+    # Используем среднюю надежность поставщиков как базу для своевременных поставок.
+    if not simulation_parameters.suppliers:
+        return 0.0
+
+    reliability_values = [
+        supplier.reliability for supplier in simulation_parameters.suppliers
+    ]
+    avg_reliability = sum(reliability_values) / len(reliability_values)
+
+    # Учитываем влияние резервных поставщиков: повышают вероятность своевременных поставок.
+    backup_bonus = 0.02 * len(simulation_parameters.backup_suppliers)
+
+    # Пенальти за длинный интервал поставки (сравниваем с недельным тактом).
+    interval_penalties = []
+    for supplier in simulation_parameters.suppliers:
+        delivery_period_days = _safe_int(
+            getattr(supplier, "delivery_period_days", 0), 0
+        )
+        if delivery_period_days > 14:
+            interval_penalties.append(0.15)
+        elif delivery_period_days > 7:
+            interval_penalties.append(0.05)
+        else:
+            interval_penalties.append(0.0)
+
+    interval_penalty = (
+        sum(interval_penalties) / len(interval_penalties) if interval_penalties else 0.0
+    )
+
+    rate = avg_reliability + backup_bonus - interval_penalty
+    return max(0.0, min(1.0, rate))
+
+
+def _collect_improvements(simulation_parameters: SimulationParameters) -> set:
+    """Возвращает множество идентификаторов внедренных улучшений."""
+    improvements = set()
+    for imp in simulation_parameters.production_improvements:
+        if imp.is_implemented:
+            normalized = imp.name.strip().lower()
+            if "5s" in normalized:
+                improvements.add("5s")
+            if "poka" in normalized or "пока" in normalized:
+                improvements.add("poka_yoke")
+            if "kanban" in normalized or "канбан" in normalized:
+                improvements.add("kanban")
+            if "smed" in normalized:
+                improvements.add("smed")
+            if "sop" in normalized or "стандарт" in normalized:
+                improvements.add("sop")
+            if "tpm" in normalized:
+                improvements.add("tpm")
+            if "предиктив" in normalized:
+                improvements.add("predictive")
+    return improvements
+
+
+def _maintenance_interval_penalty(interval_days: int, kind: str) -> float:
+    """Возвращает штраф за интервал ТО. kind: availability|performance|quality."""
+    if interval_days >= 14:
+        return (
+            0.5 if kind == "availability" else (0.6 if kind == "performance" else 0.30)
+        )
+    if interval_days >= 7:
+        return (
+            0.10
+            if kind == "availability"
+            else (0.20 if kind == "performance" else 0.07)
+        )
+    if interval_days >= 1:
+        return (
+            0.03
+            if kind == "availability"
+            else (0.07 if kind == "performance" else 0.015)
+        )
+    return 0.0
+
+
+def _qualification_penalty(required: int, actual: int, quality: bool = False) -> float:
+    if required <= 0:
+        return 0.0
+    diff = max(0, required - actual)
+    deviation = diff / required
+
+    if deviation >= 0.5:
+        return 0.5 if quality else 0.6
+    if deviation >= 0.25:
+        return 0.20 if quality else 0.25
+    if deviation >= 0.10:
+        return 0.08 if quality else 0.11
+    if deviation >= 0.01:
+        return 0.03 if quality else 0.05
+    return 0.0
+
+
+def _human_factor_penalty(qualification: int) -> float:
+    if qualification >= 7:
+        return 0.025
+    if qualification >= 4:
+        return 0.04
+    if qualification >= 1:
+        return 0.10
+    return 0.0
+
+
+def _calculate_availability_factor(
+    simulation_parameters: SimulationParameters,
+) -> float:
+    penalties = []
+    improvements = _collect_improvements(simulation_parameters)
+    predictive_bonus = 0.02 if "predictive" in improvements else 0.0
+
+    for workplace in simulation_parameters.processes.workplaces:
+        if workplace.equipment:
+            penalties.append(
+                _maintenance_interval_penalty(
+                    workplace.equipment.maintenance_period, "availability"
+                )
+            )
+        if workplace.worker:
+            penalties.append(
+                _qualification_penalty(
+                    workplace.required_qualification,
+                    workplace.worker.qualification,
+                    False,
+                )
+            )
+
+    penalty = sum(penalties) / len(penalties) if penalties else 0.0
+    availability = 1.0 - penalty + predictive_bonus
+    return max(0.0, min(1.0, availability))
+
+
+def _calculate_performance_factor(simulation_parameters: SimulationParameters) -> float:
+    penalties = []
+    improvements = _collect_improvements(simulation_parameters)
+
+    for workplace in simulation_parameters.processes.workplaces:
+        # Интервалы ТО
+        if workplace.equipment:
+            penalties.append(
+                _maintenance_interval_penalty(
+                    workplace.equipment.maintenance_period, "performance"
+                )
+            )
+
+        # Квалификация
+        if workplace.worker:
+            penalties.append(
+                _qualification_penalty(
+                    workplace.required_qualification,
+                    workplace.worker.qualification,
+                    False,
+                )
+            )
+
+        # Человеческий фактор
+        if workplace.worker and "poka_yoke" not in improvements:
+            penalties.append(_human_factor_penalty(workplace.worker.qualification))
+
+    # Положительный эффект улучшений
+    bonus = 0.0
+    bonus += 0.10 if "5s" in improvements else 0.0
+    bonus += 0.07 if "poka_yoke" in improvements else 0.0
+    bonus += 0.05 if "kanban" in improvements else 0.0
+    bonus += 0.08 if "smed" in improvements else 0.0
+    bonus += 0.15 if "sop" in improvements else 0.0
+    bonus += 0.06 if "tpm" in improvements else 0.0
+
+    penalty = sum(penalties) / len(penalties) if penalties else 0.0
+    performance = 1.0 - penalty + bonus
+    return max(0.0, min(1.2, performance))
+
+
+def _market_growth_multiplier(strategy: SaleStrategest) -> float:
+    if strategy == SaleStrategest.NONE:
+        return -0.1
+    if strategy == SaleStrategest.LOW_PRICES:
+        return 0.05
+    if strategy == SaleStrategest.DIFFERENTIATION:
+        return 0.10
+    if strategy == SaleStrategest.PREMIUM:
+        return 0.15
+    if strategy == SaleStrategest.FOCUS:
+        return 0.08
+    return 0.0
 
 
 def _calculate_oee(simulation_parameters: SimulationParameters) -> float:
-    # TODO: Implement
-    return 1.0
+    availability = _calculate_availability_factor(simulation_parameters)
+    performance = _calculate_performance_factor(simulation_parameters)
+    quality = max(0.0, 1.0 - _calculate_defect_percentage(simulation_parameters))
+
+    oee = availability * performance * quality
+    return max(0.0, min(1.0, oee))
 
 
 def _calculate_fatory_metrics(
@@ -1121,7 +1326,7 @@ def _calculate_fatory_metrics(
 
 def _calculate_monthly_productivity(
     simulation_parameters: SimulationParameters,
-) -> ProductionMetrics.MonthlyProductivity:
+) -> List[ProductionMetrics.MonthlyProductivity]:
     months = [
         "Январь",
         "Февраль",
@@ -1136,42 +1341,58 @@ def _calculate_monthly_productivity(
         "Ноябрь",
         "Декабрь",
     ]
-    monthly_productivity = []
+    productivity: List[ProductionMetrics.MonthlyProductivity] = []
+
+    performance = _calculate_performance_factor(simulation_parameters)
+    availability = _calculate_availability_factor(simulation_parameters)
+    quality = max(0.1, 1.0 - _calculate_defect_percentage(simulation_parameters))
+
+    base_units = 1200
     for month in months:
-        monthly_productivity.append(
+        multiplier = performance * availability * quality
+        units = int(base_units * multiplier)
+        productivity.append(
             ProductionMetrics.MonthlyProductivity(
                 month=month,
-                units_produced=random.randint(1000, 10000),
+                units_produced=units,
             )
         )
+
+    return productivity
 
 
 def _calculate_average_equipment_utilization(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    # TODO: Implement
-    return 1.0
+    # Используем фактор производительности как приближение коэффициента загрузки.
+    utilization = _calculate_performance_factor(simulation_parameters)
+    return max(0.0, min(1.0, utilization))
 
 
 def _calculate_wip_count(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    # TODO: Implement
-    return 100
+    # Приблизительно оцениваем WIP как количество рабочих мест * (1 - доступность).
+    availability = _calculate_availability_factor(simulation_parameters)
+    workplaces_count = len(simulation_parameters.processes.workplaces)
+    return int(workplaces_count * max(0.0, 1.0 - availability))
 
 
 def _calculate_finished_goods_count(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    # TODO: Implement
-    return 100
+    # Используем произведенные единицы за месяц как оценку готовой продукции.
+    monthly = _calculate_monthly_productivity(simulation_parameters)
+    return sum(item.units_produced for item in monthly)
 
 
 def _calculate_material_reserves(
     simulation_parameters: SimulationParameters,
 ) -> Dict[str, int]:
-    # TODO: Implement
-    return {}
+    return {
+        k: int(v)
+        for k, v in simulation_parameters.materials_warehouse.materials.items()
+    }
 
 
 def _calculate_production_metrics(
@@ -1192,37 +1413,164 @@ def _calculate_production_metrics(
 def _calculate_defect_percentage(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    return 1.0
+    base_defect = 0.15  # Изначальные потери по таблице
+
+    maintenance_penalties = []
+    qualification_penalties = []
+    human_factor_penalties = []
+
+    # Улучшения качества
+    quality_improvements = _collect_improvements(simulation_parameters)
+    has_poka_yoke = "poka_yoke" in quality_improvements
+    has_sop = "sop" in quality_improvements
+
+    for workplace in simulation_parameters.processes.workplaces:
+        # Пенальти за квалификацию
+        qual_penalty = _qualification_penalty(
+            workplace.required_qualification,
+            workplace.worker.qualification if workplace.worker else 0,
+            quality=True,
+        )
+        qualification_penalties.append(qual_penalty)
+
+        # Человеческий фактор (если нет poka-yoke)
+        if not has_poka_yoke and workplace.worker:
+            human_factor_penalties.append(
+                _human_factor_penalty(workplace.worker.qualification)
+            )
+
+        # Пенальти за ТО оборудования
+        if workplace.equipment:
+            maintenance_penalties.append(
+                _maintenance_interval_penalty(
+                    workplace.equipment.maintenance_period, "quality"
+                )
+            )
+
+    maintenance_penalty = (
+        sum(maintenance_penalties) / len(maintenance_penalties)
+        if maintenance_penalties
+        else 0.0
+    )
+    qualification_penalty = (
+        sum(qualification_penalties) / len(qualification_penalties)
+        if qualification_penalties
+        else 0.0
+    )
+    human_penalty = (
+        sum(human_factor_penalties) / len(human_factor_penalties)
+        if human_factor_penalties
+        else 0.0
+    )
+
+    # Влияние поставщиков (рандомный брак, если нет входного контроля)
+    supplier_defects = []
+    for supplier in simulation_parameters.suppliers:
+        if supplier.quality_inspection_enabled:
+            supplier_defects.append(0.0)
+            continue
+
+        if supplier.reliability >= 0.9:
+            supplier_defects.append(0.01)
+        elif supplier.reliability >= 0.75:
+            supplier_defects.append(0.05)
+        else:
+            supplier_defects.append(0.15)
+
+    supplier_penalty = (
+        sum(supplier_defects) / len(supplier_defects) if supplier_defects else 0.0
+    )
+
+    improvement_bonus = 0.0
+    if has_poka_yoke:
+        improvement_bonus += 0.10
+    if has_sop:
+        improvement_bonus += 0.05
+
+    defect = (
+        base_defect
+        + maintenance_penalty
+        + qualification_penalty
+        + human_penalty
+        + supplier_penalty
+    )
+    defect = max(0.0, defect - improvement_bonus)
+    return min(defect, 0.99)
 
 
 def _calculate_good_output_percentage(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    return 1.0
+    defect = _calculate_defect_percentage(simulation_parameters)
+    return max(0.0, 1.0 - defect)
 
 
 def _calculate_defect_causes(
     simulation_parameters: SimulationParameters,
 ) -> List[QualityMetrics.DefectCause]:
-    return []
+    defects = []
+    defect_percentage = _calculate_defect_percentage(simulation_parameters)
+
+    # Распределяем основные причины: оборудование, человек, материалы.
+    equipment_share = 0.4 * defect_percentage
+    human_share = 0.35 * defect_percentage
+    material_share = defect_percentage - equipment_share - human_share
+
+    defects.append(
+        QualityMetrics.DefectCause(
+            cause="Оборудование (интервалы ТО)",
+            count=int(equipment_share * 100),
+            percentage=equipment_share,
+        )
+    )
+    defects.append(
+        QualityMetrics.DefectCause(
+            cause="Человеческий фактор",
+            count=int(human_share * 100),
+            percentage=human_share,
+        )
+    )
+    defects.append(
+        QualityMetrics.DefectCause(
+            cause="Материалы/поставщики",
+            count=int(material_share * 100),
+            percentage=material_share,
+        )
+    )
+
+    return defects
 
 
 def _calculate_average_material_quality(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    return 1.0
+    if not simulation_parameters.suppliers:
+        return 0.0
+    qualities = [
+        supplier.product_quality for supplier in simulation_parameters.suppliers
+    ]
+    return sum(qualities) / len(qualities)
 
 
 def _calculate_average_supplier_failure_probability(
     simulation_parameters: SimulationParameters,
 ) -> float:
-    return 1.0
+    if not simulation_parameters.suppliers:
+        return 0.0
+    failures = [
+        1.0 - supplier.reliability for supplier in simulation_parameters.suppliers
+    ]
+    return sum(failures) / len(failures)
 
 
 def _calculate_procurement_volume(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 100
+    base_volume = len(simulation_parameters.suppliers)
+    failure_multiplier = 1.0 + _calculate_average_supplier_failure_probability(
+        simulation_parameters
+    )
+    return int(base_volume * failure_multiplier)
 
 
 def _calculate_quality_metrics(
@@ -1255,73 +1603,193 @@ def _calculate_engineering_metrics(
 def _calculate_operation_timings(
     simulation_parameters: SimulationParameters,
 ) -> List[EngineeringMetrics.OperationTiming]:
-    return []
+    timings = []
+    # Берем время цикла как функцию требуемой и фактической квалификации.
+    for workplace in simulation_parameters.processes.workplaces:
+        required = workplace.required_qualification or 1
+        actual = workplace.worker.qualification if workplace.worker else 0
+        mismatch = max(0, required - actual) / required
+
+        base_cycle = 60  # минут
+        if mismatch >= 0.5:
+            base_cycle *= 1.6
+        elif mismatch >= 0.25:
+            base_cycle *= 1.25
+        elif mismatch >= 0.1:
+            base_cycle *= 1.11
+        elif mismatch >= 0.01:
+            base_cycle *= 1.05
+
+        timings.append(
+            EngineeringMetrics.OperationTiming(
+                operation_name=workplace.workplace_name or workplace.workplace_id,
+                cycle_time=int(base_cycle),
+                takt_time=int(base_cycle),
+                timing_cost=int(base_cycle * 10),
+            )
+        )
+
+    return timings
 
 
 def _calculate_downtime_records(
     simulation_parameters: SimulationParameters,
 ) -> List[EngineeringMetrics.DowntimeRecord]:
-    return []
+    records = []
+    for workplace in simulation_parameters.processes.workplaces:
+        if workplace.equipment is None:
+            continue
+        equipment = workplace.equipment
+        penalty = _maintenance_interval_penalty(
+            equipment.maintenance_period, "availability"
+        )
+
+        total_minutes = int(penalty * int(equipment.repair_time) * 60)
+        records.append(
+            EngineeringMetrics.DowntimeRecord(
+                cause=f"ТО {equipment.name}" if equipment.name else "ТО оборудования",
+                total_minutes=total_minutes,
+                average_per_shift=total_minutes / 3 if total_minutes else 0,
+            )
+        )
+
+    return records
 
 
 def _calculate_defect_analysis(
     simulation_parameters: SimulationParameters,
 ) -> List[EngineeringMetrics.DefectAnalysis]:
-    return []
+    causes = _calculate_defect_causes(simulation_parameters)
+    analysis = []
+    cumulative = 0.0
+    for cause in causes:
+        cumulative += cause.percentage
+        analysis.append(
+            EngineeringMetrics.DefectAnalysis(
+                defect_type=cause.cause,
+                count=cause.count,
+                percentage=cause.percentage,
+                cumulative_percentage=min(1.0, cumulative),
+            )
+        )
+    return analysis
 
 
 def _calculate_yearly_revenues(
     simulation_parameters: SimulationParameters,
 ) -> List[CommercialMetrics.YearlyRevenue]:
-    return []
+    revenues = []
+    base = _calculate_profit(simulation_parameters)
+    for year in range(1, 5):
+        growth = _market_growth_multiplier(simulation_parameters.sales_strategy)
+        revenue = int(base * (1 + growth) * year)
+        revenues.append(CommercialMetrics.YearlyRevenue(year=year, revenue=revenue))
+    return revenues
 
 
 def _calculate_tender_revenue_plan(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 1
+    return sum(int(tender.cost) for tender in simulation_parameters.tenders)
 
 
 def _calculate_total_payments(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 1
+    equipment_costs = sum(
+        int(wp.equipment.cost)
+        for wp in simulation_parameters.processes.workplaces
+        if wp.equipment
+    )
+    maintenance_costs = sum(
+        int(wp.equipment.maintenance_cost)
+        for wp in simulation_parameters.processes.workplaces
+        if wp.equipment
+    )
+    supplier_costs = sum(
+        int(supplier.cost) for supplier in simulation_parameters.suppliers
+    )
+    improvement_costs = sum(
+        int(imp.implementation_cost)
+        for imp in simulation_parameters.production_improvements
+        if imp.is_implemented
+    )
+
+    return equipment_costs + maintenance_costs + supplier_costs + improvement_costs
 
 
 def _calculate_total_receipts(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 1
+    return _calculate_profit(simulation_parameters)
 
 
 def _calculate_sales_forecast(
     simulation_parameters: SimulationParameters,
 ) -> Dict[str, float]:
-    return {}
+    growth = _market_growth_multiplier(simulation_parameters.sales_strategy)
+    return {"market_growth": growth}
 
 
 def _calculate_strategy_costs(
     simulation_parameters: SimulationParameters,
 ) -> Dict[str, int]:
-    return {}
+    strategy = simulation_parameters.sales_strategy
+    costs = {
+        "strategy": strategy.value if hasattr(strategy, "value") else str(strategy)
+    }
+    if strategy == SaleStrategest.LOW_PRICES:
+        costs["marketing"] = 10000
+    elif strategy == SaleStrategest.DIFFERENTIATION:
+        costs["marketing"] = 15000
+    elif strategy == SaleStrategest.PREMIUM:
+        costs["marketing"] = 20000
+    elif strategy == SaleStrategest.FOCUS:
+        costs["marketing"] = 8000
+    else:
+        costs["marketing"] = 0
+    return costs
 
 
 def _calculate_tender_graph(
     simulation_parameters: SimulationParameters,
 ) -> List[CommercialMetrics.TenderGraphPoint]:
-    return []
+    points = []
+    for tender in simulation_parameters.tenders:
+        points.append(
+            CommercialMetrics.TenderGraphPoint(
+                strategy=(
+                    str(simulation_parameters.sales_strategy.value)
+                    if hasattr(simulation_parameters.sales_strategy, "value")
+                    else str(simulation_parameters.sales_strategy)
+                ),
+                unit_size=str(tender.quantity_of_products),
+                is_mastered=tender.cost > 0,
+            )
+        )
+    return points
 
 
 def _calculate_project_profitabilities(
     simulation_parameters: SimulationParameters,
 ) -> List[CommercialMetrics.ProjectProfitability]:
-    return []
+    profitabilities = []
+    total_cost = _calculate_total_payments(simulation_parameters)
+    for tender in simulation_parameters.tenders:
+        profitability = (tender.cost - total_cost) / total_cost if total_cost else 0
+        profitabilities.append(
+            CommercialMetrics.ProjectProfitability(
+                project_name=tender.tender_id, profitability=profitability
+            )
+        )
+    return profitabilities
 
 
 def _calculate_on_time_completed_orders(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 1
+    reliability = _calculate_on_time_delivery_rate(simulation_parameters)
+    return int(len(simulation_parameters.tenders) * reliability)
 
 
 def _calculate_commercial_metrics(
@@ -1358,61 +1826,95 @@ def _calculate_procurement_metrics(
 def _calculate_supplier_performances(
     simulation_parameters: SimulationParameters,
 ) -> List[ProcurementMetrics.SupplierPerformance]:
-    return []
+    performances = []
+    for supplier in simulation_parameters.suppliers:
+        planned_cost = int(supplier.cost)
+        actual_cost = int(supplier.cost)
+
+        if supplier.product_quality > 0.9:
+            projected_defect = random.uniform(0.0, 0.01)
+        elif supplier.product_quality > 0.75:
+            projected_defect = random.uniform(0.01, 0.05)
+        else:
+            projected_defect = random.uniform(0.05, 0.15)
+
+        if supplier.delivery_period_days > 14:
+            actual_cost = int(planned_cost * 1.2)
+        elif supplier.delivery_period_days > 7:
+            actual_cost = int(planned_cost * 1.05)
+
+        performances.append(
+            ProcurementMetrics.SupplierPerformance(
+                supplier_id=supplier.supplier_id,
+                delivered_quantity=_safe_int(
+                    getattr(supplier, "delivery_period_days", 0), 0
+                ),
+                projected_defect_rate=projected_defect,
+                planned_reliability=supplier.reliability,
+                actual_reliability=supplier.reliability,
+                planned_cost=planned_cost,
+                actual_cost=actual_cost,
+                actual_defect_count=int(projected_defect * 100),
+            )
+        )
+
+    return performances
 
 
 def _calculate_total_procurement_value(
     simulation_parameters: SimulationParameters,
 ) -> int:
-    return 1
+    performances = _calculate_supplier_performances(simulation_parameters)
+    return sum(int(perf.actual_cost) for perf in performances)
 
 
-def _calculate_fill_level(
-    simulation_parameters: SimulationParameters,
-) -> float:
-    return 1
+def _calculate_fill_level(warehouse: Warehouse) -> float:
+    if warehouse.size == 0:
+        return 0.0
+    return int(warehouse.loading) / int(warehouse.size)
 
 
-def _calculate_current_load(
-    simulation_parameters: SimulationParameters,
-) -> int:
-    return 1
+def _calculate_current_load(warehouse: Warehouse) -> int:
+    return int(warehouse.loading)
 
 
-def _calculate_max_capacity(
-    simulation_parameters: SimulationParameters,
-) -> int:
-    return 1
+def _calculate_max_capacity(warehouse: Warehouse) -> int:
+    return int(warehouse.size)
 
 
-def _calculate_material_levels(
-    simulation_parameters: SimulationParameters,
-) -> Dict[str, int]:
-    return {}
+def _calculate_material_levels(warehouse: Warehouse) -> Dict[str, int]:
+    return {k: int(v) for k, v in warehouse.materials.items()}
 
 
-def _calculate_load_over_time(
-    simulation_parameters: SimulationParameters,
-) -> List[int]:
-    return []
+def _calculate_load_over_time(warehouse: Warehouse) -> List[int]:
+    # Линейный рост загрузки для демонстрации графика медианной загрузки.
+    loading = int(warehouse.loading)
+    return [max(0, loading - step * 2) for step in range(5)] + [
+        loading + step * 2 for step in range(5)
+    ]
 
 
-def _calculate_max_capacity_over_time(
-    simulation_parameters: SimulationParameters,
-) -> List[int]:
-    return []
+def _calculate_max_capacity_over_time(warehouse: Warehouse) -> List[int]:
+    capacity = int(warehouse.size)
+    return [capacity for _ in range(10)]
 
 
 def _calculate_product_warehouse_metrics(
     simulation_parameters: SimulationParameters,
 ) -> WarehouseMetrics:
     return WarehouseMetrics(
-        fill_level=_calculate_fill_level(simulation_parameters),
-        current_load=_calculate_current_load(simulation_parameters),
-        max_capacity=_calculate_max_capacity(simulation_parameters),
-        material_levels=_calculate_material_levels(simulation_parameters),
-        load_over_time=_calculate_load_over_time(simulation_parameters),
-        max_capacity_over_time=_calculate_max_capacity_over_time(simulation_parameters),
+        fill_level=_calculate_fill_level(simulation_parameters.product_warehouse),
+        current_load=_calculate_current_load(simulation_parameters.product_warehouse),
+        max_capacity=_calculate_max_capacity(simulation_parameters.product_warehouse),
+        material_levels=_calculate_material_levels(
+            simulation_parameters.product_warehouse
+        ),
+        load_over_time=_calculate_load_over_time(
+            simulation_parameters.product_warehouse
+        ),
+        max_capacity_over_time=_calculate_max_capacity_over_time(
+            simulation_parameters.product_warehouse
+        ),
     )
 
 
@@ -1420,10 +1922,16 @@ def _calculate_materials_warehouse_metrics(
     simulation_parameters: SimulationParameters,
 ) -> WarehouseMetrics:
     return WarehouseMetrics(
-        fill_level=_calculate_fill_level(simulation_parameters),
-        current_load=_calculate_current_load(simulation_parameters),
-        max_capacity=_calculate_max_capacity(simulation_parameters),
-        material_levels=_calculate_material_levels(simulation_parameters),
-        load_over_time=_calculate_load_over_time(simulation_parameters),
-        max_capacity_over_time=_calculate_max_capacity_over_time(simulation_parameters),
+        fill_level=_calculate_fill_level(simulation_parameters.materials_warehouse),
+        current_load=_calculate_current_load(simulation_parameters.materials_warehouse),
+        max_capacity=_calculate_max_capacity(simulation_parameters.materials_warehouse),
+        material_levels=_calculate_material_levels(
+            simulation_parameters.materials_warehouse
+        ),
+        load_over_time=_calculate_load_over_time(
+            simulation_parameters.materials_warehouse
+        ),
+        max_capacity_over_time=_calculate_max_capacity_over_time(
+            simulation_parameters.materials_warehouse
+        ),
     )
