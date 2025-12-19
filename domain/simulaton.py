@@ -663,34 +663,7 @@ def _is_empty_simulation_parameters(
     ):
         return True
 
-    if (
-        simulation_parameters.backup_suppliers is None
-        or len(simulation_parameters.backup_suppliers) == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.product_warehouse is None
-        or simulation_parameters.product_warehouse.size == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.materials_warehouse is None
-        or simulation_parameters.materials_warehouse.size == 0
-    ):
-        return True
-
-    if (
-        simulation_parameters.processes is None
-        or simulation_parameters.processes.process_graph_id is None
-    ):
-        return True
-
     if simulation_parameters.tenders is None or len(simulation_parameters.tenders) == 0:
-        return True
-
-    if simulation_parameters.dealing_with_defects is None:
         return True
 
     if (

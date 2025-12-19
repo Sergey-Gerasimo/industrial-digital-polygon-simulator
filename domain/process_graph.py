@@ -15,6 +15,9 @@ class Route(RedisSerializable):
     length: int
     from_workplace: str
     to_workplace: str
+    # Дополнительные поля для расчета логистических затрат
+    delivery_period: int = 1
+    cost: int = 0
 
     def __eq__(self, other):
         """Сравнение по from_workplace и to_workplace."""

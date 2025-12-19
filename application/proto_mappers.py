@@ -168,6 +168,7 @@ def domain_supplier_to_proto(domain: Supplier) -> SupplierProto:
     proto.product_quality = domain.product_quality
     proto.cost = domain.cost
     proto.special_delivery_cost = domain.special_delivery_cost
+    proto.quality_inspection_enabled = domain.quality_inspection_enabled
     return proto
 
 
