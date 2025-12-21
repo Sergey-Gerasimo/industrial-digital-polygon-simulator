@@ -30,7 +30,7 @@ WAREHOUSE_TYPE_MATERIALS: WarehouseType
 WAREHOUSE_TYPE_PRODUCTS: WarehouseType
 
 class Supplier(_message.Message):
-    __slots__ = ("supplier_id", "name", "product_name", "material_type", "delivery_period", "special_delivery_period", "reliability", "product_quality", "cost", "special_delivery_cost")
+    __slots__ = ("supplier_id", "name", "product_name", "material_type", "delivery_period", "special_delivery_period", "reliability", "product_quality", "cost", "special_delivery_cost", "quality_inspection_enabled")
     SUPPLIER_ID_FIELD_NUMBER: _ClassVar[int]
     NAME_FIELD_NUMBER: _ClassVar[int]
     PRODUCT_NAME_FIELD_NUMBER: _ClassVar[int]
@@ -41,6 +41,7 @@ class Supplier(_message.Message):
     PRODUCT_QUALITY_FIELD_NUMBER: _ClassVar[int]
     COST_FIELD_NUMBER: _ClassVar[int]
     SPECIAL_DELIVERY_COST_FIELD_NUMBER: _ClassVar[int]
+    QUALITY_INSPECTION_ENABLED_FIELD_NUMBER: _ClassVar[int]
     supplier_id: str
     name: str
     product_name: str
@@ -51,7 +52,8 @@ class Supplier(_message.Message):
     product_quality: float
     cost: int
     special_delivery_cost: int
-    def __init__(self, supplier_id: _Optional[str] = ..., name: _Optional[str] = ..., product_name: _Optional[str] = ..., material_type: _Optional[str] = ..., delivery_period: _Optional[int] = ..., special_delivery_period: _Optional[int] = ..., reliability: _Optional[float] = ..., product_quality: _Optional[float] = ..., cost: _Optional[int] = ..., special_delivery_cost: _Optional[int] = ...) -> None: ...
+    quality_inspection_enabled: bool
+    def __init__(self, supplier_id: _Optional[str] = ..., name: _Optional[str] = ..., product_name: _Optional[str] = ..., material_type: _Optional[str] = ..., delivery_period: _Optional[int] = ..., special_delivery_period: _Optional[int] = ..., reliability: _Optional[float] = ..., product_quality: _Optional[float] = ..., cost: _Optional[int] = ..., special_delivery_cost: _Optional[int] = ..., quality_inspection_enabled: bool = ...) -> None: ...
 
 class Warehouse(_message.Message):
     __slots__ = ("warehouse_id", "inventory_worker", "size", "loading", "materials")
