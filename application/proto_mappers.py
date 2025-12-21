@@ -268,6 +268,13 @@ def domain_workplace_to_proto(domain: Workplace) -> WorkplaceProto:
     # (координаты на сетке 7x7 это 0-6, поэтому 255 вне диапазона и безопасно использовать)
     domain_x = getattr(domain, "x", None)
     domain_y = getattr(domain, "y", None)
+    if domain_x is not None and domain_y is not None:
+        proto.x = domain_x
+        proto.y = domain_y
+    else:
+        proto.x = 255
+        proto.y = 255
+
     proto.x = domain_x if domain_x is not None else 255  # 255 = "не установлено"
     proto.y = domain_y if domain_y is not None else 255  # 255 = "не установлено"
 
@@ -1259,6 +1266,7 @@ def proto_required_material_to_domain(proto: RequiredMaterialProto) -> RequiredM
 
 def domain_factory_metrics_obj_to_proto(domain: FactoryMetrics) -> FactoryMetricsProto:
     """Преобразует доменный объект FactoryMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1309,6 +1317,7 @@ def domain_warehouse_metrics_to_proto(
     domain: WarehouseMetrics,
 ) -> WarehouseMetricsProto:
     """Преобразует доменный объект WarehouseMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1352,6 +1361,7 @@ def domain_production_metrics_obj_to_proto(
     domain: ProductionMetrics,
 ) -> ProductionMetricsProto:
     """Преобразует доменный объект ProductionMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1406,6 +1416,7 @@ def proto_production_metrics_to_domain(
 
 def domain_quality_metrics_obj_to_proto(domain: QualityMetrics) -> QualityMetricsProto:
     """Преобразует доменный объект QualityMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1462,6 +1473,7 @@ def domain_engineering_metrics_obj_to_proto(
     domain: EngineeringMetrics,
 ) -> EngineeringMetricsProto:
     """Преобразует доменный объект EngineeringMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1546,6 +1558,7 @@ def domain_commercial_metrics_obj_to_proto(
     domain: CommercialMetrics,
 ) -> CommercialMetricsProto:
     """Преобразует доменный объект CommercialMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1638,6 +1651,7 @@ def domain_procurement_metrics_obj_to_proto(
     domain: ProcurementMetrics,
 ) -> ProcurementMetricsProto:
     """Преобразует доменный объект ProcurementMetrics в proto сообщение."""
+
     def _to_int(value, default=0):
         try:
             return int(value)
@@ -1663,9 +1677,7 @@ def domain_procurement_metrics_obj_to_proto(
         performance_proto.planned_reliability = _to_float(
             performance.planned_reliability
         )
-        performance_proto.actual_reliability = _to_float(
-            performance.actual_reliability
-        )
+        performance_proto.actual_reliability = _to_float(performance.actual_reliability)
         performance_proto.planned_cost = _to_int(performance.planned_cost)
         performance_proto.actual_cost = _to_int(performance.actual_cost)
         performance_proto.actual_defect_count = _to_int(performance.actual_defect_count)
